@@ -1,4 +1,4 @@
-# Family Shop v0.8 — offline desktop edition
+# Family Shop v0.9 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -151,3 +151,17 @@ New product names are created with the reviewed units. Existing product units mu
 If PowerShell is disabled by your Windows policy, the app reports the error and you can paste text manually; the app does not change execution policy. If no OCR language is available, install the relevant Windows language/OCR component. Scanning is performed in the background. The scanner does not automatically rotate, deskew or enhance images; prepare a clear upright photo first.
 
 Validation: all 25 tests pass, covering conservative row arrangement, rejecting missing values, all-or-nothing batch failure, receipt/stock costing, existing-record protection, import history and locked periods. Windows OCR execution and the scan screen still require verification on a Windows PC. Microsoft reference: [Windows OCR engine](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine).
+
+## v0.9 — Family Shop branding, taskbar icon and dashboard graphics
+
+Install with **Update App** and let the app restart. Family Shop now has its own storefront mark: mint awning, amber stock bars and a navy tile. The same mark appears in the sidebar, dashboard, window/title bar and Windows desktop shortcut.
+
+On Windows the process sets its own AppUserModelID before creating the Tk window and loads a multi-resolution ICO (16–256 pixels). Existing Family Shop desktop shortcuts are refreshed automatically when the app starts. The shortcut launches the current Python installation's `pythonw.exe` where available, so normal launch does not leave a command window open. Its icon is materialized in `%LOCALAPPDATA%\FamilyShop\assets`; the updater carries the icon embedded in `app.py`, so existing installations do not need another download or additional packages. A non-Windows Tk environment uses the PNG window icon instead.
+
+If you need to create or refresh the shortcut manually, use **History & controls → Refresh desktop icon**. Close Family Shop and reopen from that shortcut. An old pinned Python icon can remain cached by Windows: unpin that old item and pin the refreshed Family Shop shortcut/running window. Windows taskbar grouping, pinning and desktop icon refresh still need checking on your PC. Python remains the runtime; this is not an EXE installer.
+
+The dashboard adds an illustrated brand banner, pastel action symbols, accented summary cards, navigation hover states and a scrollable overview for smaller windows. It uses the same real period figures; the decorative illustration introduces no fictional business data. The accounting rules, local database, cloud setup and scan workflow are unchanged. No graphics package is required on users' computers.
+
+Brand assets are included as `family-shop.svg`, `family-shop.png` and `family-shop.ico`. They are native geometric artwork, not photos. Validation: all 26 tests pass, including embedded asset decoding, multi-resolution icon structure, persistent icon materialization and the existing accounting/report/updater checks. Windows shell integration and visual layout have not been tested in this environment.
+
+References: [Microsoft AppUserModelID](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-setcurrentprocessexplicitappusermodelid), [Tk window icons](https://www.tcl-lang.org/man/tcl8.7/TkCmd/wm.html).
