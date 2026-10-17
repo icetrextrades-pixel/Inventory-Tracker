@@ -1,4 +1,4 @@
-# Family Shop v0.12 — offline desktop edition
+# Family Shop v0.13 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -205,3 +205,20 @@ Install with **Update App**. Purchase costs were already included in periodic we
 Entered total sales amounts belong to the selected product/period, not the day's overall cash collection. Do not enter all shop sales against each product. Manual daily-money reconciliation remains separate. Profit uses cost of goods sold, not all purchases as an immediate expense. Report sales totals include any entered product sales amounts; reports identify derived average selling prices in the explanatory note. Carry-forward uses the stored selling price rounded to cents for the next period; review your next-period price.
 
 All 39 tests pass, including individual-unit conversion, delivery-inclusive cost, preview/report agreement, exact sales totals with repeating average prices, mode switching and rejection of sales with zero units sold. New Windows form previews still need an interaction check.
+
+## v0.13 — FIFO and periodic weighted-average inventory costing
+
+Install with **Update App**. Choose the default method when adding a product or through **Products → Packaging & costing**. Existing records retain weighted average unless you explicitly edit an open stock count and choose FIFO. The stock form now has a **Costing method** selector for that product/period. Changing only the default does not revalue an already saved period. Use a consistent cost formula for similar inventories; changing the selection is an explicit revaluation, not just a display filter. Locked periods still cannot be edited.
+
+- **FIFO:** uses opening cost layers first, then purchases ordered by receipt date and receipt ID for same-day ties. Each receipt's per-unit cost includes its allocated delivery cost. Older and newer prices remain distinct. Inventory left at period end retains its unused cost layers.
+- **Weighted average:** pools the opening inventory value and all purchases/delivery costs for the period, then divides by available units. The same average values sales, drawings, breakages and closing stock. This is periodic weighted average, not a moving average after each individual sale.
+- **Carry-forward:** now preserves the actual remaining FIFO layers or the precise weighted-average value, including fractional cents per unit, instead of relying only on the rounded opening-cost display. Do not edit the carried opening quantity or unit cost unless it needs correcting; a change discards the inherited layers and uses your entered opening balance as one layer. Previously entered opening stock without a layer history is treated as one opening layer. Carry-forward remains a one-time copy: later edits to an earlier period do not automatically refresh later periods.
+- **Cost layers:** on Stock & reports, shows each incoming layer, cost of goods sold, drawings, breakages, closing value and remaining layers. Printed reports include a per-product method and valuation summary. Sales amounts are unchanged by the cost method; cost of sales, inventory value and profit change.
+
+Example: receive 10 units at $1, then 10 at $2, and sell 12. FIFO costs sales at $14 and values the remaining 8 at $16. Periodic weighted average costs sales at $18 and values closing stock at $12.
+
+**Period-total limitation:** stock-implied sales, drawings and breakages are currently aggregate counts without individual movement dates. FIFO allocates the oldest costs to sales first, then drawings, then breakages. With drawings or breakages, this category allocation may differ from the actual dated sequence and is flagged as provisional in report checks. Closing FIFO layers account for all recorded outflows, but exact dated movement costing needs a future transaction-level stock register. This version does not implement LIFO, specific identification, moving-average/perpetual sales timing or lower-of-cost-and-net-realisable-value adjustments.
+
+Stock drawings at cost are displayed separately and are not deducted as operating expenses. The cost method and opening layers appear in the local change history. Package conversion, exact sales totals, cash reconciliation and cloud snapshots continue to use the same recorded quantities.
+
+All 45 tests pass, including rising/falling prices, receipt-date ordering, FIFO vs weighted-average values, cost-layer carry-forward, fractional-cost preservation, method-default stability and transparent non-sale allocation. The new Windows method controls and layer viewer still need an interaction check. Reference: [IFRS IAS 2 Inventories](https://www.ifrs.org/issued-standards/list-of-standards/ias-2-inventories/) describes FIFO and weighted average for ordinarily interchangeable inventories. This app's costing features do not by themselves establish full financial-reporting compliance.

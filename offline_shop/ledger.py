@@ -37,13 +37,15 @@ class Ledger:
         self.upgrade()
         self.install_controls()
 
-    def product(self, name, unit, package="Individual", per_package=1):
+    def product(self, name, unit, package="Individual", per_package=1, cost_method="Weighted average"):
         if not name.strip() or not unit.strip():
             raise ValueError('Product name and unit are required.')
         per_package=validate_package(package,per_package)
+        validate_cost_method(cost_method)
         with self.db:
             pid=self.db.execute('INSERT INTO products(name,unit) VALUES (?,?)', (name.strip(), unit.strip())).lastrowid
             self.db.execute('INSERT INTO product_packages(product,package,per_package) VALUES (?,?,?)',(pid,package,per_package))
+            self.db.execute('INSERT INTO product_costing(product,method) VALUES (?,?)',(pid,cost_method))
             return pid
 
     def period(self, start, end):
@@ -61,11 +63,14 @@ class Ledger:
         if not p or not p['start'] <= day <= p['end']:
             raise ValueError('Date must fall inside the selected period.')
 
-    def stock(self, period, product, opening, closing, drawings, broken, opening_cost, price, sales_total=None):
+    def stock(self, period, product, opening, closing, drawings, broken, opening_cost, price, sales_total=None, cost_method=None):
         vals = [quantity(x) for x in (opening, closing, drawings, broken)]
         received = self.db.execute('SELECT COALESCE(SUM(units),0) FROM receipts WHERE period=? AND product=?', (period,product)).fetchone()[0]
         if vals[1]+vals[2]+vals[3] > vals[0]+received:
             raise ValueError('Closing stock, drawings and breakages exceed available units. Enter receipts first.')
+        method=cost_method or self.period_cost_method(period,product)
+        validate_cost_method(method)
+        old=self.db.execute('SELECT opening,opening_cost FROM stock WHERE period=? AND product=?',(period,product)).fetchone()
         sold=vals[0]+received-vals[1]-vals[2]-vals[3]
         total=money(sales_total) if sales_total is not None else None
         if total is not None:
@@ -74,6 +79,9 @@ class Ledger:
         else:price_cents=money(price)
         with self.db:
             self.db.execute('INSERT INTO stock(period,product,opening,closing,drawings,broken,opening_cost,price) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(period,product) DO UPDATE SET opening=excluded.opening,closing=excluded.closing,drawings=excluded.drawings,broken=excluded.broken,opening_cost=excluded.opening_cost,price=excluded.price', (period,product,*vals,money(opening_cost),price_cents))
+            if old and (old['opening']!=vals[0] or old['opening_cost']!=money(opening_cost)):
+                self.db.execute('DELETE FROM opening_layers WHERE period=? AND product=?',(period,product))
+            self.db.execute('INSERT INTO stock_costing(period,product,method) VALUES (?,?,?) ON CONFLICT(period,product) DO UPDATE SET method=excluded.method',(period,product,method))
             self.db.execute('DELETE FROM stock_sales WHERE period=? AND product=?',(period,product))
             if total is not None:self.db.execute('INSERT INTO stock_sales(period,product,amount) VALUES (?,?,?)',(period,product,total))
 
@@ -93,7 +101,7 @@ class Ledger:
 
     def report(self, period):
         rows=[]
-        sales=cogs=loss=closing_value=Decimal(0)
+        sales=cogs=loss=closing_value=drawings_cost=Decimal(0)
         missing = self.db.execute('SELECT DISTINCT product FROM receipts WHERE period=? EXCEPT SELECT product FROM stock WHERE period=?', (period,period)).fetchall()
         if missing:
             raise ValueError('Complete stock counts for all products received before preparing reports.')
@@ -101,16 +109,17 @@ class Ledger:
             received, cost = self.db.execute('SELECT COALESCE(SUM(units),0),COALESCE(SUM(goods+freight),0) FROM receipts WHERE period=? AND product=?', (period,s['product'])).fetchone()
             total=s['opening']+received
             sold=total-s['closing']-s['drawings']-s['broken']
-            avg=Decimal(s['opening']*s['opening_cost']+cost)/total if total else Decimal(0)
+            valuation=self.inventory_valuation(period,s['product'],s)
+
             override=self.db.execute('SELECT amount FROM stock_sales WHERE period=? AND product=?',(period,s['product'])).fetchone()
             amount=override['amount'] if override else sold*s['price']
             if override and not sold and amount:raise ValueError('Sales total exists for a product with zero units sold. Review its stock count.')
             price_label=f"{Decimal(amount)/sold/100:.4f}" if override and sold else f"{s['price']/100:.2f}"
-            sales+=amount; cogs+=sold*avg; loss+=s['broken']*avg; closing_value+=s['closing']*avg
+            sales+=amount; cogs+=valuation['cogs']; loss+=valuation['breakage']; closing_value+=valuation['closing_value']; drawings_cost+=valuation['drawings']
             rows.append([s['name'],s['unit'],s['opening'],received,total,s['closing'],s['drawings'],s['broken'],sold,price_label,f'{amount/100:.2f}'])
         cash=self.db.execute('SELECT COALESCE(SUM(cash),0),COALESCE(SUM(ecocash),0),COALESCE(SUM(credit),0),COALESCE(SUM(cashout),0),COALESCE(SUM(expense),0) FROM cash WHERE period=?',(period,)).fetchone()
         accounted=sum(cash[:4])
-        totals={'Stock-implied sales':sales,'Cash handed over':cash[0],'EcoCash sales receipts':cash[1],'Unpaid credit sales':cash[2],'Cash paid out from sales':cash[3],'Total accounted for':accounted,'Unreconciled difference (positive = short)':sales-accounted,'Cost of goods sold':cogs,'Gross profit':sales-cogs,'Breakage expense at cost':loss,'Operating expenses':cash[4],'Net profit before tax (stock-implied)':sales-cogs-loss-cash[4],'Closing inventory at cost':closing_value}
+        totals={'Stock-implied sales':sales,'Cash handed over':cash[0],'EcoCash sales receipts':cash[1],'Unpaid credit sales':cash[2],'Cash paid out from sales':cash[3],'Total accounted for':accounted,'Unreconciled difference (positive = short)':sales-accounted,'Cost of goods sold':cogs,'Gross profit':sales-cogs,'Breakage expense at cost':loss,'Operating expenses':cash[4],'Net profit before tax (stock-implied)':sales-cogs-loss-cash[4],'Closing inventory at cost':closing_value,'Stock drawings at cost (not expense)':drawings_cost}
         return rows,{k:f'{Decimal(v)/100:.2f}' for k,v in totals.items()}
 
     def backup(self, path):
@@ -169,11 +178,13 @@ class Ledger:
         self.report(previous['id'])
         with self.db:
             for s in self.db.execute('SELECT * FROM stock WHERE period=?',(previous['id'],)).fetchall():
-                units,cost=self.db.execute('SELECT COALESCE(SUM(units),0),COALESCE(SUM(goods+freight),0) FROM receipts WHERE period=? AND product=?',(previous['id'],s['product'])).fetchone()
-                available=s['opening']+units
-                avg=Decimal(s['opening']*s['opening_cost']+cost)/available if available else Decimal(0)
+                valuation=self.inventory_valuation(previous['id'],s['product'],s)
+                avg=valuation['closing_value']/s['closing'] if s['closing'] else Decimal(0)
                 unit_cost=int(avg.quantize(Decimal('1'),rounding=ROUND_HALF_UP))
                 self.db.execute('INSERT INTO stock(period,product,opening,closing,drawings,broken,opening_cost,price) VALUES (?,?,?,?,0,0,?,?)',(period,s['product'],s['closing'],s['closing'],unit_cost,s['price']))
+                self.db.execute('INSERT INTO stock_costing(period,product,method) VALUES (?,?,?)',(period,s['product'],valuation['method']))
+                for seq,layer in enumerate(valuation['remaining']):
+                    self.db.execute('INSERT INTO opening_layers(period,product,sequence,units,unit_cost,source) VALUES (?,?,?,?,?,?)',(period,s['product'],seq,layer['units'],str(layer['unit_cost']),layer['source']))
         return previous['start'],previous['end']
 
     def customer_balances(self):
@@ -195,12 +206,18 @@ class Ledger:
             warnings.append(f'Credit register differs from daily credit: customer sales ${debts/100:.2f}; daily credit ${credit/100:.2f}. Difference ${(debts-credit)/100:.2f}. Check entries and same-period repayments; no automatic adjustment made.')
         if not self.db.execute('SELECT 1 FROM stock WHERE period=?',(period,)).fetchone():
             warnings.append('No stock counts entered for this period.')
+        for row in self.db.execute('SELECT s.*,p.name FROM stock s JOIN products p ON p.id=s.product WHERE period=?',(period,)):
+            if self.period_cost_method(period,row['product'])=='FIFO' and (row['drawings'] or row['broken']):
+                warnings.append(f"{row['name']}: FIFO uses period totals, allocated to sales first, drawings second, breakages last. Individual movement dates are not recorded; category costs are provisional.")
         return warnings
 
     def install_controls(self):
         """Additive migration: log future changes and guard writes in locked periods."""
         import getpass
         self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS product_costing(id INTEGER PRIMARY KEY,product INTEGER UNIQUE REFERENCES products(id),method TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS stock_costing(id INTEGER PRIMARY KEY,period INTEGER REFERENCES periods(id),product INTEGER REFERENCES products(id),method TEXT NOT NULL,UNIQUE(period,product));
+        CREATE TABLE IF NOT EXISTS opening_layers(id INTEGER PRIMARY KEY,period INTEGER REFERENCES periods(id),product INTEGER REFERENCES products(id),sequence INTEGER,units INTEGER,unit_cost TEXT,source TEXT);
         CREATE TABLE IF NOT EXISTS stock_sales(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), product INTEGER REFERENCES products(id), amount INTEGER NOT NULL, UNIQUE(period,product));
         CREATE TABLE IF NOT EXISTS product_packages(id INTEGER PRIMARY KEY, product INTEGER UNIQUE REFERENCES products(id), package TEXT NOT NULL, per_package INTEGER NOT NULL CHECK(per_package>0));
         CREATE TABLE IF NOT EXISTS receipt_packages(id INTEGER PRIMARY KEY, receipt INTEGER UNIQUE REFERENCES receipts(id), package TEXT NOT NULL, per_package INTEGER NOT NULL, packages INTEGER NOT NULL, loose INTEGER NOT NULL);
@@ -211,7 +228,7 @@ class Ledger:
         INSERT OR IGNORE INTO change_context VALUES (1,'Local user','Record saved');
         ''')
         self.db.execute('UPDATE change_context SET actor=? WHERE id=1',(getpass.getuser(),))
-        for table in ['products','periods','stock','receipts','cash','orders','deliveries','customers','debts','repayments','period_locks','product_packages','receipt_packages','stock_sales']:
+        for table in ['products','periods','stock','receipts','cash','orders','deliveries','customers','debts','repayments','period_locks','product_packages','receipt_packages','stock_sales','product_costing','stock_costing','opening_layers']:
             columns=[r['name'] for r in self.db.execute(f'PRAGMA table_info({table})')]
             def jsonrow(prefix):
                 return 'json_object('+','.join("'"+c+"',"+prefix+'.'+c for c in columns)+')'
@@ -223,7 +240,7 @@ class Ledger:
                 self.db.execute(f'''CREATE TRIGGER IF NOT EXISTS audit_{table}_{action} AFTER {action} ON {table} BEGIN
                     INSERT INTO audit_log(actor,reason,entity,action,record_id,before_data,after_data)
                     SELECT actor,reason,'{table}','{action}',{prefix}.{idcol},{before},{after} FROM change_context WHERE id=1; END''')
-        for table in ['stock','receipts','cash','debts','stock_sales']:
+        for table in ['stock','receipts','cash','debts','stock_sales','stock_costing','opening_layers']:
             for action,prefixes in [('INSERT',['NEW']),('UPDATE',['OLD','NEW']),('DELETE',['OLD'])]:
                 guard=' OR '.join(f'EXISTS(SELECT 1 FROM period_locks WHERE period={prefix}.period)' for prefix in prefixes)
                 self.db.execute(f"CREATE TRIGGER IF NOT EXISTS guard_{table}_{action} BEFORE {action} ON {table} WHEN {guard} BEGIN SELECT RAISE(ABORT,'Reporting period is locked. Reopen it with a reason before making changes.'); END")
@@ -273,10 +290,12 @@ class Ledger:
         row=self.db.execute('SELECT package,per_package FROM product_packages WHERE product=?',(product,)).fetchone()
         return dict(row) if row else {'package':'Individual','per_package':1}
 
-    def set_packaging(self,product,package,per_package):
+    def set_packaging(self,product,package,per_package,cost_method=None):
         per_package=validate_package(package,per_package)
+        if cost_method is not None:validate_cost_method(cost_method)
         with self.db:
             self.db.execute('INSERT INTO product_packages(product,package,per_package) VALUES (?,?,?) ON CONFLICT(product) DO UPDATE SET package=excluded.package,per_package=excluded.per_package',(product,package,per_package))
+            if cost_method is not None:self.db.execute('INSERT INTO product_costing(product,method) VALUES (?,?) ON CONFLICT(product) DO UPDATE SET method=excluded.method',(product,cost_method))
 
     def package_units(self,product,packages,loose):
         info=self.packaging(product)
@@ -293,19 +312,74 @@ class Ledger:
         return units
 
 
-    def stock_preview(self,period,product,opening,closing,drawings,broken,opening_cost,price,sales_total=None):
+    def stock_preview(self,period,product,opening,closing,drawings,broken,opening_cost,price,sales_total=None,cost_method=None):
         opening,closing,drawings,broken=[quantity(x) for x in (opening,closing,drawings,broken)]
         received,cost=self.db.execute('SELECT COALESCE(SUM(units),0),COALESCE(SUM(goods+freight),0) FROM receipts WHERE period=? AND product=?',(period,product)).fetchone()
         available=opening+received;sold=available-closing-drawings-broken
         if sold<0:raise ValueError('Closing, drawings and breakages exceed available units.')
-        average=(Decimal(opening*money(opening_cost)+cost)/available/100) if available else Decimal(0)
+        valuation=self.inventory_valuation(period,product,{'opening':opening,'closing':closing,'drawings':drawings,'broken':broken,'opening_cost':money(opening_cost)},cost_method)
+        average=valuation['cogs']/sold/100 if sold else Decimal(0)
         if sales_total is not None:
             amount=Decimal(money(sales_total))/100
             if not sold and amount:raise ValueError('Sales total must be zero when no units were sold.')
             unit=amount/sold if sold else Decimal(0)
         else:
             unit=Decimal(money(price))/100;amount=sold*unit
-        return {'sold':sold,'unit_cost':average,'unit_price':unit,'sales':amount}
+        return {'sold':sold,'unit_cost':average,'unit_price':unit,'sales':amount,'method':valuation['method'],'cogs':valuation['cogs']/100,'closing_value':valuation['closing_value']/100}
+
+
+    def product_cost_method(self,product):
+        row=self.db.execute('SELECT method FROM product_costing WHERE product=?',(product,)).fetchone()
+        return row['method'] if row else 'Weighted average'
+
+    def set_product_cost_method(self,product,method):
+        validate_cost_method(method)
+        with self.db:
+            self.db.execute('INSERT INTO product_costing(product,method) VALUES (?,?) ON CONFLICT(product) DO UPDATE SET method=excluded.method',(product,method))
+
+    def period_cost_method(self,period,product):
+        row=self.db.execute('SELECT method FROM stock_costing WHERE period=? AND product=?',(period,product)).fetchone()
+        if row:return row['method']
+        # Pre-upgrade reports retain their previous weighted-average valuation.
+        if self.db.execute('SELECT 1 FROM stock WHERE period=? AND product=?',(period,product)).fetchone():return 'Weighted average'
+        return self.product_cost_method(product)
+
+    def inventory_valuation(self,period,product,state=None,method=None):
+        s=state or self.db.execute('SELECT * FROM stock WHERE period=? AND product=?',(period,product)).fetchone()
+        if s is None:raise ValueError('Save a stock count for this product first.')
+        method=method or self.period_cost_method(period,product);validate_cost_method(method)
+        original=self.db.execute('SELECT opening,opening_cost FROM stock WHERE period=? AND product=?',(period,product)).fetchone()
+        carried=self.db.execute('SELECT * FROM opening_layers WHERE period=? AND product=? ORDER BY sequence,id',(period,product)).fetchall()
+        use_carried=bool(carried) and sum(r['units'] for r in carried)==s['opening'] and original and original['opening']==s['opening'] and original['opening_cost']==s['opening_cost']
+        if use_carried:
+            layers=[{'units':r['units'],'unit_cost':Decimal(r['unit_cost']),'source':r['source']} for r in carried]
+        else:
+            layers=[{'units':s['opening'],'unit_cost':Decimal(s['opening_cost']),'source':'Opening stock'}] if s['opening'] else []
+        for receipt in self.db.execute('SELECT * FROM receipts WHERE period=? AND product=? AND units>0 ORDER BY day,id',(period,product)):
+            layers.append({'units':receipt['units'],'unit_cost':Decimal(receipt['goods']+receipt['freight'])/receipt['units'],'source':f"{receipt['day']} receipt #{receipt['id']} {receipt['reference']}"})
+        inputs=[dict(layer) for layer in layers]
+        available=sum(layer['units'] for layer in layers)
+        total=sum((layer['units']*layer['unit_cost'] for layer in layers),Decimal(0))
+        sold=available-s['closing']-s['drawings']-s['broken']
+        if sold<0:raise ValueError('Stock outflows exceed available units.')
+        if method=='Weighted average':
+            avg=total/available if available else Decimal(0)
+            cogs=sold*avg;drawings=s['drawings']*avg;breakage=s['broken']*avg
+            remaining=[{'units':s['closing'],'unit_cost':avg,'source':'Weighted-average closing stock'}] if s['closing'] else []
+        else:
+            def consume(units):
+                value=Decimal(0)
+                for layer in layers:
+                    take=min(units,layer['units']);value+=take*layer['unit_cost'];layer['units']-=take;units-=take
+                    if not units:break
+                if units:raise ValueError('Not enough cost layers for the stock movements.')
+                return value
+            # Period totals lack individual movement dates. This explicit allocation
+            # order is disclosed whenever non-sale movements exist.
+            cogs=consume(sold);drawings=consume(s['drawings']);breakage=consume(s['broken'])
+            remaining=[layer for layer in layers if layer['units']]
+        closing_value=sum((layer['units']*layer['unit_cost'] for layer in remaining),Decimal(0))
+        return {'method':method,'inputs':inputs,'remaining':remaining,'cogs':cogs,'drawings':drawings,'breakage':breakage,'closing_value':closing_value,'available_value':total,'sold':sold,'carried':bool(use_carried)}
 
 
 class Cloud:
@@ -491,3 +565,10 @@ def purchase_unit_cost(units,goods,freight):
     units=quantity(units)
     if not units:raise ValueError('Enter received units first.')
     return Decimal(money(goods))/units/100,Decimal(money(goods)+money(freight))/units/100
+
+
+COST_METHODS=['Weighted average','FIFO']
+
+
+def validate_cost_method(method):
+    if method not in COST_METHODS:raise ValueError('Choose FIFO or Weighted average.')
