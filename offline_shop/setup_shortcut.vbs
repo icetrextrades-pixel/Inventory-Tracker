@@ -10,8 +10,8 @@ pythonPath = ""
 If WScript.Arguments.Count > 0 Then pythonPath = WScript.Arguments(0)
 If WScript.Arguments.Count > 1 Then quiet = (WScript.Arguments(1) = "quiet")
 If WScript.Arguments.Count > 2 Then existingOnly = (WScript.Arguments(2) = "existing")
-target = desktop & "\Family Shop.lnk"
-If existingOnly And Not fs.FileExists(target) Then WScript.Quit 0
+target = desktop & "\Mutowei Investments.lnk"
+If existingOnly And Not fs.FileExists(target) And Not fs.FileExists(desktop & "\Family Shop.lnk") Then WScript.Quit 0
 If pythonPath = "" Then
   On Error Resume Next
   pythonPath = shell.Exec("py -3 -c ""import sys; print(sys.executable)""").StdOut.ReadAll
@@ -30,9 +30,10 @@ Else
   shortcut.Arguments = ""
 End If
 shortcut.WorkingDirectory = folder
-shortcut.Description = "Family Shop - stock, money and everyday business"
-icon = shell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\FamilyShop\assets\family-shop-v1.ico"
+shortcut.Description = "Mutowei Investments - WhatKind?"
+icon = shell.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\FamilyShop\assets\mutowei-v1.ico"
 If fs.FileExists(icon) Then shortcut.IconLocation = icon & ",0"
 shortcut.Save
+If fs.FileExists(desktop & "\Family Shop.lnk") Then fs.DeleteFile desktop & "\Family Shop.lnk"
 WScript.Echo target
-If Not quiet Then MsgBox "Family Shop desktop shortcut updated. Keep this app folder in place.", 64, "Family Shop"
+If Not quiet Then MsgBox "Mutowei Investments desktop shortcut updated. Keep this app folder in place.", 64, "Mutowei Investments"

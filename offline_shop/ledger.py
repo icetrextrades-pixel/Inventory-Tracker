@@ -386,7 +386,7 @@ class Cloud:
     """Manual account-scoped snapshot transfer. Tokens live only in memory."""
     MAX_DB=10*1024*1024
 
-    def __init__(self,url,key):
+    def __init__(self,url,key,shop=None):
         import re,base64,json
         url=url.strip().rstrip('/')
         if not re.fullmatch(r'https://[a-z0-9-]+\.supabase\.co',url):
@@ -398,6 +398,8 @@ class Cloud:
                 if claims.get('role')!='anon':raise ValueError('Use the anon key, not a privileged key.')
             except (IndexError,KeyError):raise ValueError('Invalid project key.') from None
         elif not key.startswith('sb_publishable_'):raise ValueError('Enter a publishable or legacy anon key.')
+        if shop is not None and shop not in ('mutowei-bottle-store','bizzy-tuckshop','chikofa-tuckshop'):raise ValueError('Unknown shop.')
+        self.shop=shop
         self.url=url;self.key=key.strip();self.token=None;self.owner=None
 
     def request(self,path,payload=None):
@@ -412,7 +414,7 @@ class Cloud:
         except urllib.error.HTTPError as error:
             body=error.read(4096).decode('utf-8',errors='replace')
             if 'CLOUD_CONFLICT' in body:raise ValueError('A newer cloud copy exists. Upload blocked. Back up this PC and download the cloud copy before continuing.') from None
-            raise ValueError(f'Cloud request failed (HTTP {error.code}). Check sign-in, project setup and access policies. Sign in again if your session expired.') from None
+            raise ValueError(f'Cloud request failed (HTTP {error.code}). Check sign-in and run the latest multi-shop setup SQL if needed. Sign in again if your session expired.') from None
 
     def login(self,email,password):
         result=self.request('/auth/v1/token?grant_type=password',{'email':email,'password':password})
@@ -423,17 +425,24 @@ class Cloud:
         from pathlib import Path
         data=Path(path).read_bytes()
         if len(data)>self.MAX_DB:raise ValueError('Cloud backup supports databases up to 10 MiB in this version.')
-        snapshot=json.dumps({'format':1,'sha256':hashlib.sha256(data).hexdigest(),'database':base64.b64encode(data).decode()})
+        if self.shop:
+            with sqlite3.connect(path) as check:
+                row=check.execute('SELECT shop FROM shop_identity WHERE id=1').fetchone()
+                if not row or row[0]!=self.shop:raise ValueError('Backup belongs to a different shop.')
+        snapshot=json.dumps({'format':1,'shop':self.shop,'sha256':hashlib.sha256(data).hexdigest(),'database':base64.b64encode(data).decode()})
+        if self.shop:return self.request('/rest/v1/rpc/family_shop_upload_shop',{'expected_version':expected,'snapshot':snapshot,'target_shop':self.shop})
         return self.request('/rest/v1/rpc/family_shop_upload',{'expected_version':expected,'snapshot':snapshot})
 
     def download(self,path):
         import base64,json,hashlib
         from pathlib import Path
         if not self.owner:raise ValueError('Sign in first.')
-        rows=self.request('/rest/v1/family_shop_backups?select=version,payload,updated_at&owner=eq.'+self.owner)
+        table='family_shop_shop_backups' if self.shop else 'family_shop_backups'
+        rows=self.request('/rest/v1/'+table+'?select=version,payload,updated_at&owner=eq.'+self.owner+('&shop=eq.'+self.shop if self.shop else ''))
         if not rows:raise ValueError('No cloud backup found for this account.')
         snapshot=json.loads(rows[0]['payload'])
         if snapshot.get('format')!=1:raise ValueError('Unsupported cloud backup format.')
+        if self.shop and snapshot.get('shop')!=self.shop:raise ValueError('Cloud backup belongs to another shop.')
         data=base64.b64decode(snapshot['database'],validate=True)
         if len(data)>self.MAX_DB or hashlib.sha256(data).hexdigest()!=snapshot['sha256']:raise ValueError('Backup integrity check failed.')
         Path(path).write_bytes(data)
@@ -443,6 +452,9 @@ class Cloud:
             if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('Cloud database is damaged.')
             tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if not {'products','periods','stock','receipts','cash'}.issubset(tables):raise ValueError('Not a Family Shop database.')
+            if self.shop:
+                identity=db.execute('SELECT shop FROM shop_identity WHERE id=1').fetchone()
+                if not identity or identity[0]!=self.shop:raise ValueError('Cloud database belongs to another shop.')
             if db.execute('PRAGMA foreign_key_check').fetchone():raise ValueError('Cloud database contains invalid references.')
         except sqlite3.DatabaseError:raise ValueError('Invalid cloud database.') from None
         finally:
@@ -450,7 +462,7 @@ class Cloud:
         return int(rows[0]['version'])
 
 
-CLOUD_SETUP_SQL = "-- Run once in your dedicated Supabase project's SQL editor.\ncreate table if not exists public.family_shop_backups (\n  owner uuid primary key references auth.users(id) on delete cascade,\n  version bigint not null check (version > 0),\n  payload text not null check (octet_length(payload) <= 16000000),\n  updated_at timestamptz not null default now()\n);\nalter table public.family_shop_backups enable row level security;\nrevoke all on public.family_shop_backups from anon;\ngrant select, insert, update on public.family_shop_backups to authenticated;\ndrop policy if exists family_shop_owner on public.family_shop_backups;\ncreate policy family_shop_owner on public.family_shop_backups for all to authenticated\nusing ((select auth.uid()) = owner) with check ((select auth.uid()) = owner);\n\ncreate or replace function public.family_shop_upload(expected_version bigint, snapshot text)\nreturns bigint language plpgsql security invoker set search_path = '' as $$\ndeclare next_version bigint;\nbegin\n  if auth.uid() is null then raise exception 'Sign in required'; end if;\n  if expected_version < 0 or octet_length(snapshot)>16000000 then raise exception 'Invalid snapshot'; end if;\n  if expected_version = 0 then\n    insert into public.family_shop_backups(owner,version,payload)\n      values(auth.uid(),1,snapshot) on conflict do nothing returning version into next_version;\n  else\n    update public.family_shop_backups set version=version+1,payload=snapshot,updated_at=now()\n      where owner=auth.uid() and version=expected_version returning version into next_version;\n  end if;\n  if next_version is null then raise exception 'CLOUD_CONFLICT: Download the newer cloud copy before uploading'; end if;\n  return next_version;\nend $$;\nrevoke execute on function public.family_shop_upload(bigint,text) from public, anon;\ngrant execute on function public.family_shop_upload(bigint,text) to authenticated;\n"
+CLOUD_SETUP_SQL = "-- Run once in your dedicated Supabase project's SQL editor.\ncreate table if not exists public.family_shop_backups (\n  owner uuid primary key references auth.users(id) on delete cascade,\n  version bigint not null check (version > 0),\n  payload text not null check (octet_length(payload) <= 16000000),\n  updated_at timestamptz not null default now()\n);\nalter table public.family_shop_backups enable row level security;\nrevoke all on public.family_shop_backups from anon;\ngrant select, insert, update on public.family_shop_backups to authenticated;\ndrop policy if exists family_shop_owner on public.family_shop_backups;\ncreate policy family_shop_owner on public.family_shop_backups for all to authenticated\nusing ((select auth.uid()) = owner) with check ((select auth.uid()) = owner);\n\ncreate or replace function public.family_shop_upload(expected_version bigint, snapshot text)\nreturns bigint language plpgsql security invoker set search_path = '' as $$\ndeclare next_version bigint;\nbegin\n  if auth.uid() is null then raise exception 'Sign in required'; end if;\n  if expected_version < 0 or octet_length(snapshot)>16000000 then raise exception 'Invalid snapshot'; end if;\n  if expected_version = 0 then\n    insert into public.family_shop_backups(owner,version,payload)\n      values(auth.uid(),1,snapshot) on conflict do nothing returning version into next_version;\n  else\n    update public.family_shop_backups set version=version+1,payload=snapshot,updated_at=now()\n      where owner=auth.uid() and version=expected_version returning version into next_version;\n  end if;\n  if next_version is null then raise exception 'CLOUD_CONFLICT: Download the newer cloud copy before uploading'; end if;\n  return next_version;\nend $$;\nrevoke execute on function public.family_shop_upload(bigint,text) from public, anon;\ngrant execute on function public.family_shop_upload(bigint,text) to authenticated;\n\n-- Multi-shop upgrade: preserve the earlier single-shop backup table.\ncreate table if not exists public.family_shop_shop_backups (\n  owner uuid not null references auth.users(id) on delete cascade,\n  shop text not null check (shop in ('mutowei-bottle-store','bizzy-tuckshop','chikofa-tuckshop')),\n  version bigint not null check (version > 0),\n  payload text not null check (octet_length(payload) <= 16000000),\n  updated_at timestamptz not null default now(),\n  primary key(owner,shop)\n);\nalter table public.family_shop_shop_backups enable row level security;\nrevoke all on public.family_shop_shop_backups from anon;\ngrant select,insert,update on public.family_shop_shop_backups to authenticated;\ndrop policy if exists family_shop_shop_owner on public.family_shop_shop_backups;\ncreate policy family_shop_shop_owner on public.family_shop_shop_backups for all to authenticated\nusing ((select auth.uid())=owner) with check ((select auth.uid())=owner);\ncreate or replace function public.family_shop_upload_shop(expected_version bigint,snapshot text,target_shop text)\nreturns bigint language plpgsql security invoker set search_path='' as $$\ndeclare next_version bigint;\nbegin\n  if auth.uid() is null then raise exception 'Sign in required'; end if;\n  if expected_version<0 or octet_length(snapshot)>16000000 or target_shop not in ('mutowei-bottle-store','bizzy-tuckshop','chikofa-tuckshop') then raise exception 'Invalid snapshot or shop'; end if;\n  if expected_version=0 then\n    insert into public.family_shop_shop_backups(owner,shop,version,payload)\n    values(auth.uid(),target_shop,1,snapshot) on conflict do nothing returning version into next_version;\n  else\n    update public.family_shop_shop_backups set version=version+1,payload=snapshot,updated_at=now()\n    where owner=auth.uid() and shop=target_shop and version=expected_version returning version into next_version;\n  end if;\n  if next_version is null then raise exception 'CLOUD_CONFLICT: Download the newer cloud copy before uploading'; end if;\n  return next_version;\nend $$;\nrevoke execute on function public.family_shop_upload_shop(bigint,text,text) from public,anon;\ngrant execute on function public.family_shop_upload_shop(bigint,text,text) to authenticated;\n"
 
 
 OCR_POWERSHELL = 'param([string]$ImagePath,[string]$OutputPath)\n$ErrorActionPreference=\'Stop\'\nAdd-Type -AssemblyName System.Runtime.WindowsRuntime\n$null=[Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]\n$null=[Windows.Storage.FileAccessMode,Windows.Storage,ContentType=WindowsRuntime]\n$null=[Windows.Storage.Streams.IRandomAccessStream,Windows.Storage.Streams,ContentType=WindowsRuntime]\n$null=[Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics.Imaging,ContentType=WindowsRuntime]\n$null=[Windows.Graphics.Imaging.SoftwareBitmap,Windows.Graphics.Imaging,ContentType=WindowsRuntime]\n$null=[Windows.Media.Ocr.OcrEngine,Windows.Media.Ocr,ContentType=WindowsRuntime]\n$null=[Windows.Media.Ocr.OcrResult,Windows.Media.Ocr,ContentType=WindowsRuntime]\n$asTask=([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {$_.Name -eq \'AsTask\' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq \'IAsyncOperation`1\'})[0]\nfunction Await($operation,$type) {\n    $task=$asTask.MakeGenericMethod($type).Invoke($null,@($operation))\n    $task.Wait()\n    return $task.Result\n}\n$stream=$null\n$bitmap=$null\ntry {\n    $file=Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImagePath)) ([Windows.Storage.StorageFile])\n    $stream=Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])\n    $decoder=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])\n    $bitmap=Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])\n    $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()\n    if ($null -eq $engine) {throw \'No Windows OCR language is installed. Install English OCR in Windows language settings, then try again.\'}\n    if ($bitmap.PixelWidth -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension -or $bitmap.PixelHeight -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) {throw \'Image is too large for Windows OCR. Resize the longest side to 2000 pixels and try again.\'}\n    $result=Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])\n    $text=($result.Lines | ForEach-Object {$_.Text}) -join "`n"\n    [System.IO.File]::WriteAllText($OutputPath,$text,[System.Text.UTF8Encoding]::new($false))\n} finally {\n    if ($null -ne $bitmap) {$bitmap.Dispose()}\n    if ($null -ne $stream) {$stream.Dispose()}\n}\n'

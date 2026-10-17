@@ -65,8 +65,12 @@ def install_staged(root,stage,rollback):
 
 def run_update(root,sha,backup):
     import sqlite3
-    with sqlite3.connect(backup.parent/'shop.sqlite3') as source, sqlite3.connect(backup) as target:
-        source.backup(target)
+    # Back up every shop before updating shared program files.
+    sources=[backup.parent/'shop.sqlite3']+sorted((backup.parent/'shops').glob('*/shop.sqlite3'))
+    for source_path in sources:
+        if not source_path.exists():continue
+        target_path=backup if source_path.parent==backup.parent else backup.with_name(backup.stem+'-'+source_path.parent.name+'.sqlite3')
+        with sqlite3.connect(source_path) as source,sqlite3.connect(target_path) as target:source.backup(target)
     with tempfile.TemporaryDirectory(prefix='.shop-update-',dir=root) as temp:
         stage=Path(temp)
         stage_update(stage,sha)
@@ -90,9 +94,9 @@ def main():
         from datetime import datetime
         backup=data/('before-update-'+datetime.now().strftime('%Y%m%d-%H%M%S')+'.sqlite3')
         run_update(root,sha,backup)
-        messagebox.showinfo('Update complete','Family Shop has been updated. Your records were backed up. The app will now reopen.')
+        messagebox.showinfo('Update complete','Mutowei Investments has been updated. Your records were backed up. The app will now reopen.')
     except FileExistsError:
-        messagebox.showerror('Update already running','Another update is running. If a previous update was interrupted, close all Family Shop windows and remove .update-lock from the app folder.')
+        messagebox.showerror('Update already running','Another update is running. If a previous update was interrupted, close all Mutowei Investments windows and remove .update-lock from the app folder.')
         return
     except Exception as exc:
         messagebox.showerror('Update failed',f'{exc}\n\nYour records have not been replaced. The app will reopen. Try again when internet is available.')

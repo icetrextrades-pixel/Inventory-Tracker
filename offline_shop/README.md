@@ -1,4 +1,11 @@
-# Family Shop v0.14 — offline desktop edition
+# Mutowei Investments v0.15 — three-shop desktop app
+
+**WhatKind?**
+
+Mutowei Investments contains three independent shop sections: **Mutowei Bottle Store**, **Bizzy Tuckshop (grocery & beer)** and **Chikofa Tuckshop (grocery & beer)**. Choose a shop using the three section buttons above the reporting-period controls. Records, products, stock, costs, orders, customer balances, reports and change history belong only to that shop. This is separate local storage, not staff authorization; there are no per-shop passwords or roles.
+
+The app and desktop shortcut use a mint soup bowl with a spoon resting inside it. Earlier release notes below use the former name Family Shop. The repository folder and updater branch retain their original technical names so installed updates keep working.
+
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -232,3 +239,30 @@ Animations use Tk's event loop, not blocking sleeps or extra UI threads. Short e
 **History & controls → Reduce motion** applies effects instantly without movement and disables animated loading bars. The preference is stored locally in `motion-settings.json` outside the shop database. Enabling it also completes and cancels pending decorative animations. Disabling it restores effects on subsequent interactions. It is an app preference, not automatic detection of Windows accessibility settings.
 
 All 49 tests pass, including cancellation of stale callbacks during rapid transitions, clean completion, reduced-motion behaviour and saved preference. The effects' appearance and responsiveness still need checking on Windows hardware. No database schema, accounting figures, cloud setup or updater settings change.
+
+
+## v0.15 — Mutowei Investments, WhatKind? and three shop sections
+
+Install with **Update App**. The window, sidebar, banner, reports, updater dialogs and desktop shortcut use **Mutowei Investments** and the motto **WhatKind?**. The bowl-and-spoon logo is embedded in the updater-compatible app and supplied as `mutowei.svg`, `mutowei.png` and `mutowei.ico`. Existing Family Shop desktop shortcuts are replaced with Mutowei Investments shortcuts after launch; Windows may require repinning the new shortcut if an older Python/Family Shop item was pinned.
+
+### Shop separation
+
+The three section buttons switch between:
+
+1. **Mutowei Bottle Store** — bottle store.
+2. **Bizzy Tuckshop** — grocery and beer.
+3. **Chikofa Tuckshop** — grocery and beer.
+
+Each has its own database under the existing application data root's `shops/<shop-id>/shop.sqlite3`. The data root retains its former `FamilyShop` name to preserve compatibility. Selected shop, report title and window title identify the active shop. The last selected shop is remembered. Periods are independent, so the same date range can exist in all three shops. Switching clears unsaved scan text/drafts (asking before discarding a nonempty CSV draft), closes nonmodal record viewers and refreshes products, periods, reports and customer history. These sections are not a consolidated group income statement and do not add inter-shop transfers.
+
+### Records from before this update
+
+If the former single-shop database has records, the app asks which shop they belong to. Choose the correct destination explicitly or close the dialog and decide later through **History & controls → Assign records from before the three-shop update**. Assignment copies the records to one shop only; it never duplicates them into all three. The original database and a dated backup are preserved. It refuses to overwrite a shop that already has records or repeat a completed assignment. Review the destination before saving. If your former database already mixes several shops, do not assign the mixed data to one shop as though it were correct; sorting those records requires a separate migration.
+
+### Shop backups and online setup
+
+Manual backup, scan-import backup, reports and restore now operate on the selected shop. Future app updates back up every shop before replacing shared program files. The first update to this version uses the prior updater to back up the original single-shop database, before the new sections are created.
+
+**Cloud users must run the refreshed setup SQL once in the same Supabase project:** Online backup → Save Supabase setup SQL, then execute it in SQL Editor. The script keeps the old single-shop backup table and adds a shop-scoped backup table/RPC. No project or auth account change is required. Each account now has one separate latest snapshot per shop, with independent version checks. Shop identity is checked before upload and after download, preventing a Bizzy backup from being restored in Chikofa's section. A signed-in session can be reused when switching, but the shop namespace changes. The previous unassigned cloud snapshot remains preserved and is not automatically copied to any shop. Assign local records first, then upload the selected shop. New SQL/RLS live deployment remains unverified here.
+
+All **53 tests pass**, including isolated reports/data for all three shops, explicit legacy assignment with source preservation/no overwrite, cloud namespace and wrong-shop rejection, and updater backups for every shop. The new shop-switching controls and renamed Windows shortcut still require a Windows interaction check. All costing, package, sales, scanning and period-control features remain available within each shop.
