@@ -1,4 +1,4 @@
-# Family Shop v0.7 — offline desktop edition
+# Family Shop v0.8 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -136,3 +136,18 @@ Cloud snapshots are limited to 10 MiB in this initial version. Downloads are che
 Validation: **21 tests pass**, including snapshot round-trip, version payload, conflict handling, error redaction, hostile URL/privileged key rejection and tampered/invalid database checks. HTTP responses are mocked for cloud tests. SQL deployment, cross-account RLS and real sign-in/upload/restore still require integration testing against your configured Supabase project. No project credentials were supplied and no live backend was provisioned.
 
 References: [Supabase password authentication](https://supabase.com/docs/guides/auth/passwords), [row-level security](https://supabase.com/docs/guides/database/postgres/row-level-security), [database functions](https://supabase.com/docs/guides/database/functions).
+
+## v0.8 — image scanning and reviewed record import
+
+Update in the app, then open **Scan records**. This initial OCR integration uses Windows 10/11's local OCR engine and Windows PowerShell; no paid API key, Python OCR package or cloud upload is required. Images are read locally and never sent for recognition to Supabase or another service. Windows must have an OCR-capable language such as English installed. Printed, straight, sharp text works best; handwriting is not reliably recognized and must be checked manually. PDF/HEIC, direct camera capture, multiple-image batches and cloud AI handwriting recognition are not included.
+
+1. Select the reporting period first. Choose **Choose image & scan** for a PNG/JPG/BMP photo (under 30 MiB), or paste transcribed text into the editable source box. Oversized pixel dimensions are rejected with instructions to resize.
+2. Choose Stock counts, Goods received or Daily money, then **Arrange draft**. Correct the source and CSV draft against the photo. Stock-sheet rows in `Product Opening Receivings Total Closing Sold Price Amount` order can be arranged if their printed arithmetic agrees. Drawings, breakages and opening cost remain blank because the scanner cannot infer them. The unit defaults to `each` and must be checked. Receipts must be entered before dependent stock counts. Other layouts may need manual comma-separated transcription.
+3. For daily money/receivings use the exact CSV headings shown by the app. Commas or vertical bars or tab-separated source lines can be arranged when the column counts match. Lines that cannot be arranged are counted in the notice and remain in the source text; add their rows yourself if relevant. Dates must be YYYY-MM-DD. Monetary amounts must omit currency symbols/commas and use decimal points. Quote text containing commas using ordinary CSV quoting.
+4. Fill unknown numbers explicitly after checking the record; blanks do not become zero. Select **Save reviewed rows** and confirm you checked the draft. A local backup is made first. All rows are validated on a temporary in-memory database, and the resulting state is copied back only when the whole batch succeeds. Nothing saves automatically after OCR.
+
+New product names are created with the reviewed units. Existing product units must match. Existing stock counts and daily-money dates cannot be overwritten by import; edit them through their normal forms. Exact repeated batches are blocked; altered/retyped batches may still duplicate receipts, so check before importing. Period locks and normal stock validations still apply. Accepted record changes appear in history with the source filename. Raw image files and extracted text are not saved in the shop database; keep your originals separately. Scans are drafts and contain no confidence scores or accounting certification. Cloud upload remains a separate action.
+
+If PowerShell is disabled by your Windows policy, the app reports the error and you can paste text manually; the app does not change execution policy. If no OCR language is available, install the relevant Windows language/OCR component. Scanning is performed in the background. The scanner does not automatically rotate, deskew or enhance images; prepare a clear upright photo first.
+
+Validation: all 25 tests pass, covering conservative row arrangement, rejecting missing values, all-or-nothing batch failure, receipt/stock costing, existing-record protection, import history and locked periods. Windows OCR execution and the scan screen still require verification on a Windows PC. Microsoft reference: [Windows OCR engine](https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine).

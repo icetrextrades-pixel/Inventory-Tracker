@@ -188,6 +188,7 @@ class Ledger:
         import getpass
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS period_locks(period INTEGER PRIMARY KEY REFERENCES periods(id), reason TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), mode TEXT NOT NULL, digest TEXT NOT NULL, source TEXT NOT NULL, UNIQUE(period,mode,digest));
         CREATE TABLE IF NOT EXISTS change_context(id INTEGER PRIMARY KEY CHECK(id=1), actor TEXT, reason TEXT);
         CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')), actor TEXT, reason TEXT, entity TEXT, action TEXT, record_id INTEGER, before_data TEXT, after_data TEXT);
         INSERT OR IGNORE INTO change_context VALUES (1,'Local user','Record saved');
@@ -319,3 +320,99 @@ class Cloud:
 
 
 CLOUD_SETUP_SQL = "-- Run once in your dedicated Supabase project's SQL editor.\ncreate table if not exists public.family_shop_backups (\n  owner uuid primary key references auth.users(id) on delete cascade,\n  version bigint not null check (version > 0),\n  payload text not null check (octet_length(payload) <= 16000000),\n  updated_at timestamptz not null default now()\n);\nalter table public.family_shop_backups enable row level security;\nrevoke all on public.family_shop_backups from anon;\ngrant select, insert, update on public.family_shop_backups to authenticated;\ndrop policy if exists family_shop_owner on public.family_shop_backups;\ncreate policy family_shop_owner on public.family_shop_backups for all to authenticated\nusing ((select auth.uid()) = owner) with check ((select auth.uid()) = owner);\n\ncreate or replace function public.family_shop_upload(expected_version bigint, snapshot text)\nreturns bigint language plpgsql security invoker set search_path = '' as $$\ndeclare next_version bigint;\nbegin\n  if auth.uid() is null then raise exception 'Sign in required'; end if;\n  if expected_version < 0 or octet_length(snapshot)>16000000 then raise exception 'Invalid snapshot'; end if;\n  if expected_version = 0 then\n    insert into public.family_shop_backups(owner,version,payload)\n      values(auth.uid(),1,snapshot) on conflict do nothing returning version into next_version;\n  else\n    update public.family_shop_backups set version=version+1,payload=snapshot,updated_at=now()\n      where owner=auth.uid() and version=expected_version returning version into next_version;\n  end if;\n  if next_version is null then raise exception 'CLOUD_CONFLICT: Download the newer cloud copy before uploading'; end if;\n  return next_version;\nend $$;\nrevoke execute on function public.family_shop_upload(bigint,text) from public, anon;\ngrant execute on function public.family_shop_upload(bigint,text) to authenticated;\n"
+
+
+OCR_POWERSHELL = 'param([string]$ImagePath,[string]$OutputPath)\n$ErrorActionPreference=\'Stop\'\nAdd-Type -AssemblyName System.Runtime.WindowsRuntime\n$null=[Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]\n$null=[Windows.Storage.FileAccessMode,Windows.Storage,ContentType=WindowsRuntime]\n$null=[Windows.Storage.Streams.IRandomAccessStream,Windows.Storage.Streams,ContentType=WindowsRuntime]\n$null=[Windows.Graphics.Imaging.BitmapDecoder,Windows.Graphics.Imaging,ContentType=WindowsRuntime]\n$null=[Windows.Graphics.Imaging.SoftwareBitmap,Windows.Graphics.Imaging,ContentType=WindowsRuntime]\n$null=[Windows.Media.Ocr.OcrEngine,Windows.Media.Ocr,ContentType=WindowsRuntime]\n$null=[Windows.Media.Ocr.OcrResult,Windows.Media.Ocr,ContentType=WindowsRuntime]\n$asTask=([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {$_.Name -eq \'AsTask\' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq \'IAsyncOperation`1\'})[0]\nfunction Await($operation,$type) {\n    $task=$asTask.MakeGenericMethod($type).Invoke($null,@($operation))\n    $task.Wait()\n    return $task.Result\n}\n$stream=$null\n$bitmap=$null\ntry {\n    $file=Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImagePath)) ([Windows.Storage.StorageFile])\n    $stream=Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])\n    $decoder=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])\n    $bitmap=Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])\n    $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()\n    if ($null -eq $engine) {throw \'No Windows OCR language is installed. Install English OCR in Windows language settings, then try again.\'}\n    if ($bitmap.PixelWidth -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension -or $bitmap.PixelHeight -gt [Windows.Media.Ocr.OcrEngine]::MaxImageDimension) {throw \'Image is too large for Windows OCR. Resize the longest side to 2000 pixels and try again.\'}\n    $result=Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])\n    $text=($result.Lines | ForEach-Object {$_.Text}) -join "`n"\n    [System.IO.File]::WriteAllText($OutputPath,$text,[System.Text.UTF8Encoding]::new($false))\n} finally {\n    if ($null -ne $bitmap) {$bitmap.Dispose()}\n    if ($null -ne $stream) {$stream.Dispose()}\n}\n'
+
+
+def scan_image(path):
+    """Offline Windows OCR; path is passed as an argument, never interpolated code."""
+    import os,subprocess,tempfile
+    from pathlib import Path
+    if os.name!='nt':raise ValueError('Image scanning requires Windows 10/11. You can still paste text and review/import it.')
+    source=Path(path).resolve()
+    if source.suffix.lower() not in ('.png','.jpg','.jpeg','.bmp'):raise ValueError('Choose a PNG, JPG or BMP image.')
+    if source.stat().st_size>30*1024*1024:raise ValueError('Choose an image smaller than 30 MiB.')
+    with tempfile.TemporaryDirectory(prefix='family-shop-ocr-') as folder:
+        script=Path(folder)/'scan.ps1';output=Path(folder)/'text.txt'
+        script.write_text(OCR_POWERSHELL,encoding='utf-8-sig')
+        result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-File',str(script),'-ImagePath',str(source),'-OutputPath',str(output)],capture_output=True,timeout=120,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        if result.returncode or not output.exists():
+            error=result.stderr.decode(errors='replace').strip()
+            raise ValueError('Windows OCR could not read this image. Check that English OCR is installed and the image is clear. If Windows blocks the script, paste the text manually.\n'+error[:1000])
+        text=output.read_text(encoding='utf-8-sig')
+        if not text.strip():raise ValueError('No text was found. Try a sharper, straight photo with good lighting.')
+        return text
+
+
+IMPORT_COLUMNS={
+    'Stock counts':['Product','Unit','Opening','Closing','Drawings','Broken','OpeningCost','SellingPrice'],
+    'Daily money':['Date','Cash','EcoCash','Credit','CashOut','Expenses','Notes'],
+    'Goods received':['Date','Product','Unit','Supplier','Reference','Units','GoodsCost','DeliveryCost']
+}
+
+
+def arrange_scan(text,mode):
+    """Conservative draft: preserve unparsed lines and leave unknown fields blank."""
+    import csv,io,re
+    output=io.StringIO();writer=csv.writer(output);writer.writerow(IMPORT_COLUMNS[mode]);unparsed=[]
+    for line in text.splitlines():
+        if not line.strip():continue
+        if ',' in line or '|' in line or '\t' in line:
+            delimiter='|' if '|' in line else '\t' if '\t' in line else ','
+            parts=next(csv.reader([line],delimiter=delimiter))
+            parts=[x.strip() for x in parts]
+            if parts==IMPORT_COLUMNS[mode]:continue
+            if len(parts)==len(IMPORT_COLUMNS[mode]):writer.writerow(parts);continue
+        if mode=='Stock counts':
+            clean=re.sub(r'^\s*\d{1,4}[/-]\d{1,2}(?:[/-]\d{2,4})?\s+','',line.strip())
+            match=re.fullmatch(r'(.+?)\s+((?:\$?\d+(?:\.\d+)?\s+){6}\$?\d+(?:\.\d+)?)',clean)
+            if match:
+                numbers=[x.lstrip('$') for x in match[2].split()]
+                opening,received,total,closing,sold,price,amount=numbers
+                if Decimal(opening)+Decimal(received)==Decimal(total) and Decimal(sold)*Decimal(price)==Decimal(amount):
+                    writer.writerow([match[1],'each',opening,closing,'','','',price]);continue
+        unparsed.append(line)
+    return output.getvalue(),unparsed
+
+
+def import_reviewed(ledger,period,mode,text,source):
+    """Validate a full batch on a clone before copying its committed state back."""
+    import csv,io,hashlib
+    if mode not in IMPORT_COLUMNS:raise ValueError('Choose an import type.')
+    reader=csv.DictReader(io.StringIO(text))
+    if reader.fieldnames!=IMPORT_COLUMNS[mode]:raise ValueError('Keep the exact CSV column headings shown in the draft.')
+    rows=list(reader)
+    if not rows:raise ValueError('No rows to import.')
+    if len(rows)>1000:raise ValueError('Import at most 1,000 rows at a time.')
+    clone=Ledger(':memory:')
+    try:
+        ledger.db.backup(clone.db)
+        if clone.period_locked(period):raise ValueError('The selected period is locked.')
+        digest=hashlib.sha256(text.strip().encode()).hexdigest()
+        if clone.db.execute('SELECT 1 FROM import_batches WHERE period=? AND mode=? AND digest=?',(period,mode,digest)).fetchone():raise ValueError('This exact reviewed batch has already been imported.')
+        clone.db.execute('UPDATE change_context SET reason=? WHERE id=1',('Reviewed image/text import: '+source[:200],));clone.db.commit()
+        for number,row in enumerate(rows,2):
+            try:
+                if None in row or any(v is None for v in row.values()):raise ValueError('Wrong number of columns.')
+                row={k:v.strip() for k,v in row.items()}
+                optional={'Notes','Supplier','Reference'}
+                if any(not v for k,v in row.items() if k not in optional):raise ValueError('Fill in all quantities and costs explicitly, including zero where confirmed.')
+                if mode=='Daily money':
+                    if clone.db.execute('SELECT 1 FROM cash WHERE period=? AND day=?',(period,row['Date'])).fetchone():raise ValueError('Daily money already exists for this date; edit it in the app instead.')
+                    clone.cash(period,row['Date'],row['Cash'],row['EcoCash'],row['Credit'],row['CashOut'],row['Expenses'],row['Notes'])
+                else:
+                    product=clone.db.execute('SELECT id,unit FROM products WHERE name=?',(row['Product'],)).fetchone()
+                    if product and product['unit']!=row['Unit']:raise ValueError('Product unit differs from the existing product.')
+                    pid=product['id'] if product else clone.product(row['Product'],row['Unit'])
+                    if mode=='Stock counts':
+                        if clone.db.execute('SELECT 1 FROM stock WHERE period=? AND product=?',(period,pid)).fetchone():raise ValueError('Stock count already exists for this product; edit it in the app instead.')
+                        clone.stock(period,pid,row['Opening'],row['Closing'],row['Drawings'],row['Broken'],row['OpeningCost'],row['SellingPrice'])
+                    else:
+                        clone.receipt(period,pid,row['Date'],row['Supplier'],row['Reference'],row['Units'],row['GoodsCost'],row['DeliveryCost'])
+            except Exception as exc:raise ValueError(f'CSV row {number}: {exc}') from None
+        clone.db.execute('INSERT INTO import_batches(period,mode,digest,source) VALUES (?,?,?,?)',(period,mode,digest,source[:200]))
+        clone.db.execute("UPDATE change_context SET reason='Record saved' WHERE id=1");clone.db.commit()
+        clone.db.backup(ledger.db)
+        return len(rows)
+    finally:clone.db.close()

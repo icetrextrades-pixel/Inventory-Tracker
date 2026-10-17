@@ -50,10 +50,10 @@ class App(tk.Tk):
         tk.Label(sidebar,text='FAMILY\nSHOP',font=('Segoe UI',24,'bold'),bg='#142d32',fg='#ffffff',justify='left').pack(anchor='w',padx=24,pady=(30,4))
         tk.Label(sidebar,text='YOUR DAILY BUSINESS',font=('Segoe UI',8,'bold'),bg='#142d32',fg='#8cb9b6').pack(anchor='w',padx=24,pady=(0,32))
         self.nav_buttons=[]
-        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls','Online backup']):
+        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls','Online backup','Scan records']):
             button=tk.Button(sidebar,text=label,anchor='w',font=('Segoe UI',11),bg='#142d32',fg='#c9dcdd',activebackground='#23545a',activeforeground='white',relief='flat',borderwidth=0,padx=22,pady=14,cursor='hand2',command=lambda i=index:self.navigate(i))
             button.pack(fill='x',padx=10,pady=3);self.nav_buttons.append(button)
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.7  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.8  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -110,6 +110,7 @@ class App(tk.Tk):
         self.build_operations()
         self.build_controls()
         self.build_cloud()
+        self.build_scanner()
         self.reload_periods()
         self.navigate(0)
 
@@ -140,7 +141,7 @@ class App(tk.Tk):
 
     def navigate(self,index):
         self.tabs.select(index)
-        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls','Online backup & restore'][index])
+        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls','Online backup & restore','Scan & transcribe records'][index])
         for i,button in enumerate(self.nav_buttons):
             button.configure(bg='#23545a' if i==index else '#142d32',fg='white' if i==index else '#c9dcdd')
 
@@ -313,7 +314,7 @@ class App(tk.Tk):
         toolbar=ttk.Frame(frame);toolbar.pack(fill='x')
         ttk.Button(toolbar,text='Lock / reopen period',command=self.toggle_lock).pack(side='left',padx=(0,8))
         ttk.Button(toolbar,text='Correct / void receipt',command=self.correct_delivery).pack(side='left')
-        ttk.Label(frame,text='History covers changes from v0.7 onward, across all periods. Select a row to inspect before and after.\nLocking protects period records; reopening requires a reason. Repayments are protected by payment date.\nYour computer username identifies changes. This local history is not tamper-proof security.',style='Muted.TLabel',wraplength=800).pack(anchor='w',pady=14)
+        ttk.Label(frame,text='History covers changes from v0.8 onward, across all periods. Select a row to inspect before and after.\nLocking protects period records; reopening requires a reason. Repayments are protected by payment date.\nYour computer username identifies changes. This local history is not tamper-proof security.',style='Muted.TLabel',wraplength=800).pack(anchor='w',pady=14)
         self.history_table=self.register_table(frame,['Time UTC','User','Record','Action','Reason'])
         self.history_table.bind('<<TreeviewSelect>>',self.history_detail)
         self.history_text=tk.Text(frame,height=7,wrap='word',font=('Consolas',10),bg='white',fg='#244047',relief='flat',padx=12,pady=12)
@@ -494,6 +495,63 @@ class App(tk.Tk):
                 messagebox.showinfo('Cloud copy restored',f'Downloaded version {version}. Previous local records were backed up to {backup.name}.')
             finally:snapshot.unlink(missing_ok=True)
         self.cloud_job('Downloading cloud backup',work,done)
+
+    def build_scanner(self):
+        from ledger import IMPORT_COLUMNS
+        self.scan_source='Pasted text';self.scan_unparsed=[]
+        frame=ttk.Frame(self.tabs,padding=12);self.tabs.add(frame,text='Scan records')
+        toolbar=ttk.Frame(frame);toolbar.pack(fill='x')
+        ttk.Button(toolbar,text='Choose image & scan',command=self.choose_scan).pack(side='left')
+        self.scan_mode=ttk.Combobox(toolbar,state='readonly',values=list(IMPORT_COLUMNS),width=18);self.scan_mode.set('Stock counts');self.scan_mode.pack(side='left',padx=8)
+        ttk.Button(toolbar,text='Arrange draft',command=self.arrange_draft).pack(side='left')
+        ttk.Button(toolbar,text='Save reviewed rows',command=self.save_scan).pack(side='right')
+        ttk.Label(frame,text='1. Choose a JPG, PNG or BMP photo, or paste text below.  2. Arrange and correct the CSV draft.  3. Review and save.\nWindows OCR is best for clear printed text. Handwriting, columns and prices can be misread. Nothing saves automatically.',style='Muted.TLabel',wraplength=790).pack(anchor='w',pady=10)
+        ttk.Label(frame,text='Extracted text — editable',style='Section.TLabel').pack(anchor='w')
+        self.scan_text=tk.Text(frame,height=6,wrap='word',font=('Consolas',10));self.scan_text.pack(fill='both',expand=True,pady=6)
+        self.scan_notice=ttk.Label(frame,text='Choose a reporting period first. Goods receipts should be imported before stock counts.',style='Muted.TLabel',wraplength=790);self.scan_notice.pack(anchor='w',pady=6)
+        ttk.Label(frame,text='Review draft — comma-separated columns (CSV)',style='Section.TLabel').pack(anchor='w')
+        self.scan_draft=tk.Text(frame,height=8,wrap='none',font=('Consolas',10));self.scan_draft.pack(fill='both',expand=True,pady=6)
+        scroll=ttk.Scrollbar(frame,orient='horizontal',command=self.scan_draft.xview);self.scan_draft.configure(xscrollcommand=scroll.set);scroll.pack(fill='x')
+        ttk.Label(frame,text='Stock: Product,Unit,Opening,Closing,Drawings,Broken,OpeningCost,SellingPrice\nDaily money: Date,Cash,EcoCash,Credit,CashOut,Expenses,Notes\nGoods received: Date,Product,Unit,Supplier,Reference,Units,GoodsCost,DeliveryCost\nUse YYYY-MM-DD dates and individual units. Enter unknown values only after checking the source; blank costs are not treated as zero.',style='Muted.TLabel',wraplength=790).pack(anchor='w',pady=8)
+
+    def choose_scan(self):
+        from ledger import scan_image
+        path=filedialog.askopenfilename(title='Choose shop record image',filetypes=[('Record images','*.png *.jpg *.jpeg *.bmp')])
+        if not path:return
+        if self.scan_text.get('1.0','end').strip() and not messagebox.askyesno('Replace scan text','Replace the text currently in the scanner? Saved shop records will not change.'):
+            return
+        def done(text):
+            self.scan_source=Path(path).name
+            self.scan_text.delete('1.0','end');self.scan_text.insert('end',text)
+            self.scan_draft.delete('1.0','end');self.scan_unparsed=[]
+            self.scan_notice.configure(text=f'Scanned {Path(path).name}. Check the text against the photo, then arrange a draft.')
+        self.cloud_job('Scanning image locally',lambda:scan_image(path),done)
+
+    def arrange_draft(self):
+        from ledger import arrange_scan
+        try:
+            text=self.scan_text.get('1.0','end').strip()
+            if not text:raise ValueError('Scan an image or paste text first.')
+            if self.scan_draft.get('1.0','end').strip() and not messagebox.askyesno('Replace draft','Replace the current CSV draft? Any edits in the draft will be discarded.'):
+                return
+            draft,unparsed=arrange_scan(text,self.scan_mode.get());self.scan_unparsed=unparsed
+            self.scan_draft.delete('1.0','end');self.scan_draft.insert('end',draft)
+            self.scan_notice.configure(text=f'{len(unparsed)} source lines were not arranged. Check the original text and add missing rows manually. Blank quantities/costs must be filled before saving. Selected type: {self.scan_mode.get()}.')
+        except Exception as exc:messagebox.showerror('Arrange draft',str(exc))
+
+    def save_scan(self):
+        from ledger import import_reviewed
+        try:
+            p=self.pid();mode=self.scan_mode.get();text=self.scan_draft.get('1.0','end').strip()
+            if not messagebox.askyesno('Confirm reviewed import',f'Save the reviewed {mode.lower()} rows into {self.period.get()}?\n\nConfirm every number, product and unit against the source. {len(self.scan_unparsed)} source lines were not arranged automatically. Only the CSV draft is imported. A local backup will be saved first.'):
+                return
+            from datetime import datetime
+            self.ledger.backup(DATA/('before-scan-import-'+datetime.now().strftime('%Y%m%d-%H%M%S')+'.sqlite3'))
+            count=import_reviewed(self.ledger,p,mode,text,self.scan_source)
+            self.scan_draft.delete('1.0','end');self.refresh()
+            self.scan_notice.configure(text=f'Saved {count} reviewed rows. Raw scan text remains above for reference.')
+            messagebox.showinfo('Records imported',f'Saved {count} rows. Cloud upload is separate; choose Online backup when ready.')
+        except Exception as exc:messagebox.showerror('Import not saved',str(exc))
 
     def check_update(self):
         self.update_button.configure(state='disabled',text='Checking…')
