@@ -34,6 +34,8 @@ class Ledger:
         CREATE TABLE IF NOT EXISTS cash(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), day TEXT, cash INTEGER, ecocash INTEGER, credit INTEGER, cashout INTEGER, expense INTEGER, note TEXT, UNIQUE(period,day));
         ''')
 
+        self.upgrade()
+
     def product(self, name, unit):
         if not name.strip() or not unit.strip():
             raise ValueError('Product name and unit are required.')
@@ -99,3 +101,62 @@ class Ledger:
     def backup(self, path):
         with sqlite3.connect(path) as target:
             self.db.backup(target)
+
+    def upgrade(self):
+        self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY, product INTEGER REFERENCES products(id), supplier TEXT NOT NULL, reference TEXT NOT NULL, day TEXT NOT NULL, units INTEGER NOT NULL, estimated INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS deliveries(id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), receipt_id INTEGER UNIQUE REFERENCES receipts(id), units INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS customers(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL);
+        CREATE TABLE IF NOT EXISTS debts(id INTEGER PRIMARY KEY, customer INTEGER REFERENCES customers(id), period INTEGER REFERENCES periods(id), day TEXT NOT NULL, amount INTEGER NOT NULL, note TEXT);
+        CREATE TABLE IF NOT EXISTS repayments(id INTEGER PRIMARY KEY, debt INTEGER REFERENCES debts(id), day TEXT NOT NULL, amount INTEGER NOT NULL, method TEXT NOT NULL);
+        ''')
+
+    def order(self, product, supplier, reference, day, units, estimated):
+        date.fromisoformat(day); units=quantity(units)
+        if not supplier.strip() or not reference.strip() or not units:
+            raise ValueError('Supplier, order reference and positive units are required.')
+        with self.db:
+            return self.db.execute('INSERT INTO orders(product,supplier,reference,day,units,estimated) VALUES (?,?,?,?,?,?)',(product,supplier.strip(),reference.strip(),day,units,money(estimated))).lastrowid
+
+    def receive_order(self, order_id, period, day, units, goods, freight):
+        self.check_day(period,day); units=quantity(units)
+        with self.db:
+            order=self.db.execute('SELECT * FROM orders WHERE id=?',(order_id,)).fetchone()
+            if not order:raise ValueError('Order not found.')
+            received=self.db.execute('SELECT COALESCE(SUM(units),0) FROM deliveries WHERE order_id=?',(order_id,)).fetchone()[0]
+            if not units or units>order['units']-received:raise ValueError('Delivery exceeds outstanding units, or is zero.')
+            if day<order['day']:raise ValueError('Delivery date precedes the order date.')
+            receipt=self.db.execute('INSERT INTO receipts(period,product,day,supplier,reference,units,goods,freight) VALUES (?,?,?,?,?,?,?,?)',(period,order['product'],day,order['supplier'],order['reference'],units,money(goods),money(freight))).lastrowid
+            self.db.execute('INSERT INTO deliveries(order_id,receipt_id,units) VALUES (?,?,?)',(order_id,receipt,units))
+
+    def debt(self, customer, period, day, amount, note):
+        self.check_day(period,day); amount=money(amount)
+        if not customer.strip() or not amount:raise ValueError('Customer name and positive amount required.')
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO customers(name) VALUES (?)',(customer.strip(),))
+            cid=self.db.execute('SELECT id FROM customers WHERE name=?',(customer.strip(),)).fetchone()[0]
+            return self.db.execute('INSERT INTO debts(customer,period,day,amount,note) VALUES (?,?,?,?,?)',(cid,period,day,amount,note)).lastrowid
+
+    def repay(self, debt, day, amount, method):
+        date.fromisoformat(day); amount=money(amount)
+        if method not in ('Cash','EcoCash'):raise ValueError('Choose Cash or EcoCash.')
+        with self.db:
+            d=self.db.execute('SELECT * FROM debts WHERE id=?',(debt,)).fetchone()
+            paid=self.db.execute('SELECT COALESCE(SUM(amount),0) FROM repayments WHERE debt=?',(debt,)).fetchone()[0]
+            if not d or day<d['day'] or not amount or amount>d['amount']-paid:raise ValueError('Invalid date or repayment exceeds balance.')
+            self.db.execute('INSERT INTO repayments(debt,day,amount,method) VALUES (?,?,?,?)',(debt,day,amount,method))
+
+    def carry_forward(self, period):
+        current=self.db.execute('SELECT * FROM periods WHERE id=?',(period,)).fetchone()
+        previous=self.db.execute('SELECT * FROM periods WHERE end<? ORDER BY end DESC LIMIT 1',(current['start'],)).fetchone()
+        if not previous:raise ValueError('There is no earlier reporting period.')
+        if self.db.execute('SELECT 1 FROM stock WHERE period=?',(period,)).fetchone():raise ValueError('This period already has stock counts. Carry-forward will not overwrite them.')
+        self.report(previous['id'])
+        with self.db:
+            for s in self.db.execute('SELECT * FROM stock WHERE period=?',(previous['id'],)).fetchall():
+                units,cost=self.db.execute('SELECT COALESCE(SUM(units),0),COALESCE(SUM(goods+freight),0) FROM receipts WHERE period=? AND product=?',(previous['id'],s['product'])).fetchone()
+                available=s['opening']+units
+                avg=Decimal(s['opening']*s['opening_cost']+cost)/available if available else Decimal(0)
+                unit_cost=int(avg.quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                self.db.execute('INSERT INTO stock(period,product,opening,closing,drawings,broken,opening_cost,price) VALUES (?,?,?,?,0,0,?,?)',(period,s['product'],s['closing'],s['closing'],unit_cost,s['price']))
+        return previous['start'],previous['end']

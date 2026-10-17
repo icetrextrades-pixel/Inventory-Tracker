@@ -1,4 +1,4 @@
-# Family Shop — offline desktop edition
+# Family Shop v0.2 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -40,9 +40,9 @@ The historical check is $774.65 stock-implied sales less $531 cash, $49.15 EcoCa
 
 ## Scope of this first version
 
-This is a stock-count and period reconciliation tool, not yet a full double-entry accounting package. Profit is provisional and assumes complete counts, accurate costs and one selling price per product per period. Missing costs entered as zero overstate profit. Use shorter periods when selling prices change. Count all products, including those with no receipts; the app can only flag missing counts for products with recorded receipts. Opening stock must be entered manually for each period, using the previous closing stock and its cost.
+This is a stock-count and period reconciliation tool, not yet a full double-entry accounting package. Profit is provisional and assumes complete counts, accurate costs and one selling price per product per period. Missing costs entered as zero overstate profit. Use shorter periods when selling prices change. Count all products, including those with no receipts; the app can only flag missing counts for products with recorded receipts. Opening stock can be brought forward from the latest earlier period, then actual closing counts must be updated.
 
-Received orders are recorded; pending orders, partial-delivery tracking, supplier balances, debtors ledgers, transaction-level sales, returns, taxes, multiple currencies, passwords/roles, encryption, automatic stock carry-forward and an EXE installer are future work. Records are local to one computer and are not synced across devices. The computer's account/file permissions protect the unencrypted database. The entry register currently shows product IDs and monetary cents; exported financial reports show currency amounts.
+Received orders are recorded; supplier balances, transaction-level sales, returns, taxes, multiple currencies, passwords/roles, encryption, an EXE installer are future work. Records are local to one computer and are not synced across devices. The computer's account/file permissions protect the unencrypted database. The entry register currently shows product IDs and monetary cents; exported financial reports show currency amounts.
 
 ## Backups and recovery
 
@@ -51,3 +51,15 @@ On Windows the database is `%LOCALAPPDATA%\FamilyShop\shop.sqlite3`. The precise
 ## Verification
 
 Run `python -m unittest -v` from this folder. Tests cover weighted costs, delivery, drawings, breakages, operating expenses, the $167.25 difference, repeated daily updates, dates, overlapping periods, impossible counts, invalid money and receipts missing stock counts. Desktop window verification on Windows is still required.
+
+
+## v0.2 upgrade and new workflows
+
+**Before updating:** use Backup database in the old app and close it. Extract the new ZIP into a fresh folder and run `offline_shop/start_shop.bat`. It uses the same data path as v0.1 and adds tables automatically, preserving your saved records. Keep your backup in case you need to return to v0.1.
+
+- **Purchase orders:** select a reporting period, then open Orders & customer credit. Create a purchase order with supplier, reference, product, units and estimated total cost. An order has no effect on stock or profit until received. Receive order records each partial delivery in the selected period with its actual goods cost and allocated delivery charge. Outstanding units reduce automatically; excessive deliveries are rejected. Do not also enter that delivery through Goods received, or you will duplicate it. Estimates are informational, not supplier balances or actual purchase costs.
+- **Customer credit:** record individual customer credit sales and repayments. Each repayment is allocated to one debt and cannot exceed its remaining balance. The screen shows original amount, paid amount and balance. This is a supporting register: daily-money credit totals still need manual entry/reconciliation. Do not count a debt-register entry twice as a daily sale, and exclude collections of old debts from sales receipts. This version does not automatically reconcile the credit register to daily money. Multiple debts for one customer are displayed separately.
+- **Carry-forward:** select a new period with no stock-count rows and choose Bring forward previous closing stock. It copies the latest earlier period's closing units, weighted-average cost (rounded to cents per unit) and selling price. A safety backup is saved first. Closing units initially equal opening units, meaning zero implied sales until you enter actual closing counts. This is a one-time copy, not a live link: later edits to the previous period do not change it. Confirm the previous period is complete first. Rounding cost per unit can create small inventory valuation differences.
+- **Editing:** stock forms preload the selected product's saved count. Daily-money forms preload when you enter the date. Check all fields before saving. Receipts, purchase orders, deliveries and debt entries are append-only in this version; corrections/reversals and audit history are planned.
+
+Validation now includes nine tests: partial deliveries and overdelivery rejection, debt overpayment prevention and separation from sales, carry-forward/no overwrite, and upgrading an existing database with backup, in addition to the original reconciliation and costing checks. Desktop interaction for v0.2 still needs a check on Windows.
