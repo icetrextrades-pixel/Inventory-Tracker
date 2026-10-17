@@ -122,6 +122,12 @@ def scroll_target(widget,axis,motion,parents):
     return None
 
 
+def blend_color(start,end,progress):
+    progress=max(0.0,min(1.0,progress))
+    values=[round(int(start[i:i+2],16)+(int(end[i:i+2],16)-int(start[i:i+2],16))*progress) for i in (1,3,5)]
+    return '#'+''.join(f'{value:02x}' for value in values)
+
+
 class App(tk.Tk):
     def __init__(self):
         self.brand_folder=materialize_brand()
@@ -134,6 +140,8 @@ class App(tk.Tk):
         self.geometry('1280x850')
         self.minsize(1060,720)
         self._scroll_parents={}
+        self._animations={}
+        self.reduce_motion=tk.BooleanVar(value=self.load_motion())
         self.apply_theme()
         self.ledger = Ledger(DATA / 'shop.sqlite3')
         sidebar=tk.Frame(self,bg='#142d32',width=216)
@@ -148,13 +156,16 @@ class App(tk.Tk):
         for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls','Online backup','Scan records']):
             button=tk.Button(sidebar,text=label,anchor='w',font=('Segoe UI',11),bg='#142d32',fg='#c9dcdd',activebackground='#23545a',activeforeground='white',relief='flat',borderwidth=0,padx=22,pady=11,cursor='hand2',command=lambda i=index:self.navigate(i))
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
-            button.bind('<Enter>',lambda e,b=button:b.configure(bg='#203f47'))
-            button.bind('<Leave>',lambda e,b=button,i=index:b.configure(bg='#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.13  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+            button.bind('<Enter>',lambda e,b=button:self.animate_nav(b,'#203f47'))
+            button.bind('<Leave>',lambda e,b=button,i=index:self.animate_nav(b,'#28545b' if self.nav_selected==i else '#142d32'))
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.14  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
         ttk.Label(header,text='Everything your shop needs, in one place.',style='Muted.TLabel').pack(anchor='w',pady=(4,0))
+        self.transition_line=tk.Canvas(header,height=3,bg='#e1ebeb',highlightthickness=0)
+        self.transition_line.pack(fill='x',pady=(12,0))
+        self.transition_mark=self.transition_line.create_rectangle(0,0,1,3,fill='#54cbb0',outline='')
         bar=ttk.Frame(workspace); bar.pack(fill='x',pady=(0,18))
         ttk.Label(bar,text='Reporting period:').pack(side='left')
         self.period=ttk.Combobox(bar,state='readonly',width=34); self.period.pack(side='left',padx=8)
@@ -188,6 +199,7 @@ class App(tk.Tk):
             ttk.Label(card,text=detail,style='CardBody.TLabel',wraplength=310).pack(anchor='w',pady=(8,18))
             ttk.Button(card,text=button,command=command,style='Accent.TButton').pack(anchor='w')
             if i==0:ttk.Button(card,text='Packaging & costing',command=self.edit_packaging).pack(anchor='w',pady=(8,0))
+            self.bind_card_animation(card,symbol,i)
         ttk.Label(actions,text='Keep your numbers reliable',style='Section.TLabel').pack(anchor='w',pady=(10,8))
         ttk.Label(actions,text='Count individual units and include purchase costs. Profit stays provisional until stock and money agree.\nKeep old debt collections separate from new sales. Back up your records regularly.',style='Muted.TLabel',wraplength=780).pack(anchor='w')
         report=self.add_scroll_page('Stock sheet & income statement')
@@ -324,14 +336,16 @@ class App(tk.Tk):
     def build_hero(self,parent):
         hero=tk.Frame(parent,bg='#173b45',height=130);hero.pack(fill='x',pady=(0,18));hero.pack_propagate(False)
         tk.Label(hero,text='A GOOD DAY STARTS WITH CLEAR RECORDS',font=('Segoe UI',8,'bold'),bg='#173b45',fg='#7ad8bf').place(x=22,y=18)
-        tk.Label(hero,text='Small shop. Big picture.',font=('Segoe UI',22,'bold'),bg='#173b45',fg='white').place(x=20,y=39)
+        self.hero_heading=tk.Label(hero,text='Small shop. Big picture.',font=('Segoe UI',22,'bold'),bg='#173b45',fg='white')
+        self.hero_heading.place(x=20,y=39)
         tk.Label(hero,text='Know what came in, what went out, and what is left.',font=('Segoe UI',10),bg='#173b45',fg='#b9d1d4').place(x=22,y=88)
         art=tk.Canvas(hero,width=130,height=110,bg='#173b45',highlightthickness=0)
         art.place(relx=1,x=-145,y=10)
-        art.create_oval(15,4,117,106,fill='#24535a',outline='')
+        self.hero_art=art
+        self.hero_ring=art.create_oval(15,4,117,106,fill='#24535a',outline='')
         # Keep Tk's image alive for the lifetime of the canvas.
         art.brand=self.brand_image.subsample(3,3)
-        art.create_image(65,55,image=art.brand)
+        self.hero_mark=art.create_image(65,55,image=art.brand)
         def fit(event):
             if event.width<730:art.place_forget()
             else:art.place(relx=1,x=-145,y=10)
@@ -367,6 +381,93 @@ class App(tk.Tk):
         except Exception as exc:
             if not existing_only:messagebox.showerror('Shortcut could not be updated',str(exc))
 
+    def load_motion(self):
+        import json
+        try:return bool(json.loads((DATA/'motion-settings.json').read_text()).get('reduce_motion',False))
+        except (OSError,ValueError,AttributeError):return False
+
+    def animate(self,key,duration,step):
+        import time
+        previous=self._animations.pop(key,None)
+        if previous:
+            try:self.after_cancel(previous['after'])
+            except tk.TclError:pass
+        if self.reduce_motion.get():step(1.0);return
+        started=time.perf_counter()
+        job={'after':None,'finish':lambda:step(1.0)}
+        self._animations[key]=job
+        def tick():
+            if self._animations.get(key) is not job:return
+            progress=min(1.0,(time.perf_counter()-started)*1000/max(1,duration))
+            eased=1-(1-progress)**3
+            try:step(eased)
+            except tk.TclError:self._animations.pop(key,None);return
+            if progress<1:job['after']=self.after(25,tick)
+            else:self._animations.pop(key,None)
+        tick()
+
+    def toggle_motion(self):
+        import json
+        try:(DATA/'motion-settings.json').write_text(json.dumps({'reduce_motion':self.reduce_motion.get()}),encoding='utf-8')
+        except OSError as exc:messagebox.showerror('Motion preference',str(exc))
+        if self.reduce_motion.get():
+            jobs=list(self._animations.values());self._animations.clear()
+            for job in jobs:
+                try:
+                    self.after_cancel(job['after']);job['finish']()
+                except tk.TclError:pass
+
+    def animate_nav(self,button,target):
+        start=button.cget('background')
+        self.animate('nav:'+str(button),150,lambda t:button.configure(bg=blend_color(start,target,t)))
+
+    def animate_page(self,index):
+        def reveal(t):
+            width=max(1,self.transition_line.winfo_width())
+            self.transition_line.coords(self.transition_mark,0,0,width*t,3)
+            self.page_title.configure(foreground=blend_color('#93aaa9','#193b41',t))
+        self.animate('page-reveal',300,reveal)
+        if index==0:
+            import math
+            def welcome(t):
+                self.hero_heading.place_configure(x=20+round(14*(1-t)))
+                self.hero_heading.configure(fg=blend_color('#5f8589','#ffffff',t))
+                self.hero_art.coords(self.hero_mark,65,55-5*math.sin(math.pi*t))
+                self.hero_art.itemconfigure(self.hero_ring,fill=blend_color('#24535a','#347565',math.sin(math.pi*t)))
+            self.animate('hero-reveal',650,welcome)
+        else:
+            old=self._animations.pop('hero-reveal',None)
+            if old:
+                try:self.after_cancel(old['after']);old['finish']()
+                except tk.TclError:pass
+
+    def bind_card_animation(self,card,symbol,index):
+        style=ttk.Style(self);name=f'Action{index}.TFrame'
+        style.configure(name,background='white',relief='solid',borderwidth=1,bordercolor='#e2e9e9');card.configure(style=name)
+        symbol._glyph_y=0.0
+        for item in symbol.find_all()[1:]:symbol.addtag_withtag('motion-glyph',item)
+        state={'active':False,'border':'#e2e9e9'}
+        def target(active):
+            if active==state['active']:return
+            state['active']=active;start=state['border'];destination='#75bfae' if active else '#e2e9e9'
+            y0=symbol._glyph_y;y1=-2 if active else 0
+            def frame(t):
+                color=blend_color(start,destination,t);state['border']=color
+                style.configure(name,bordercolor=color)
+                y=y0+(y1-y0)*t;symbol.move('motion-glyph',0,y-symbol._glyph_y);symbol._glyph_y=y
+            self.animate('card:'+str(card),160,frame)
+        def leave(event):
+            def check():
+                try:
+                    inside=card.winfo_rootx()<=self.winfo_pointerx()<card.winfo_rootx()+card.winfo_width() and card.winfo_rooty()<=self.winfo_pointery()<card.winfo_rooty()+card.winfo_height()
+                    if not inside:target(False)
+                except tk.TclError:pass
+            self.after_idle(check)
+        def bind(widget):
+            widget.bind('<Enter>',lambda e:target(True),add='+');widget.bind('<Leave>',leave,add='+')
+            for child in widget.winfo_children():bind(child)
+        bind(card)
+
     def apply_theme(self):
         self.configure(bg='#f2f6f6')
         self.option_add('*Font',('Segoe UI',10))
@@ -383,7 +484,7 @@ class App(tk.Tk):
         style.configure('TButton',padding=(12,10),background='#e2eeee',foreground='#23494c',borderwidth=0)
         style.map('TButton',background=[('active','#d0e5e1'),('disabled','#edf1f1')])
         style.configure('Accent.TButton',background='#167565',foreground='white',padding=(16,10))
-        style.map('Accent.TButton',background=[('active','#105f52')],foreground=[('active','white')])
+        style.map('Accent.TButton',background=[('pressed','#0c4c43'),('active','#105f52')],foreground=[('active','white')],padding=[('pressed',(16,11,16,9))])
         style.configure('TEntry',fieldbackground='white',padding=7)
         style.configure('TCombobox',fieldbackground='white',padding=7)
         style.configure('Treeview',background='white',fieldbackground='white',foreground='#25464b',rowheight=32,borderwidth=0)
@@ -397,7 +498,9 @@ class App(tk.Tk):
         self.tabs.select(index)
         self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls','Online backup & restore','Scan & transcribe records'][index])
         for i,button in enumerate(self.nav_buttons):
-            button.configure(bg='#28545b' if i==index else '#142d32',fg='white' if i==index else '#c9dcdd')
+            button.configure(fg='white' if i==index else '#c9dcdd')
+            self.animate_nav(button,'#28545b' if i==index else '#142d32')
+        self.animate_page(index)
 
     def reload_periods(self):
         self.periods={f"{r['start']} to {r['end']}":r['id'] for r in self.ledger.db.execute('SELECT * FROM periods ORDER BY start DESC')}
@@ -626,6 +729,7 @@ class App(tk.Tk):
         self.lock_status=ttk.Label(frame,text='',style='Section.TLabel');self.lock_status.pack(anchor='w',pady=(0,12))
         toolbar=ttk.Frame(frame);toolbar.pack(fill='x')
         ttk.Button(toolbar,text='Refresh desktop icon',command=self.desktop_shortcut).pack(side='right')
+        ttk.Checkbutton(frame,text='Reduce motion',variable=self.reduce_motion,command=self.toggle_motion).pack(anchor='w',pady=(0,12),before=toolbar)
         ttk.Button(toolbar,text='Lock / reopen period',command=self.toggle_lock).pack(side='left',padx=(0,8))
         ttk.Button(toolbar,text='Correct / void receipt',command=self.correct_delivery).pack(side='left')
         ttk.Label(frame,text='History covers changes from v0.8 onward, across all periods. Select a row to inspect before and after.\nLocking protects period records; reopening requires a reason. Repayments are protected by payment date.\nYour computer username identifies changes. This local history is not tamper-proof security.',style='Muted.TLabel',wraplength=800).pack(anchor='w',pady=14)
@@ -761,6 +865,9 @@ class App(tk.Tk):
     def cloud_job(self,title,work,done):
         popup=tk.Toplevel(self);popup.title(title);popup.transient(self);popup.grab_set();popup.resizable(False,False)
         ttk.Label(popup,text=title+'… Please wait.',padding=24).pack()
+        activity=ttk.Progressbar(popup,mode='indeterminate',length=280)
+        activity.pack(fill='x',padx=24,pady=(0,20))
+        if not self.reduce_motion.get():activity.start(45)
         popup.protocol('WM_DELETE_WINDOW',lambda:None)
         results=queue.Queue()
         def worker():
@@ -770,7 +877,7 @@ class App(tk.Tk):
         def poll():
             try:ok,result=results.get_nowait()
             except queue.Empty:self.after(150,poll);return
-            popup.destroy()
+            activity.stop();popup.destroy()
             if ok:
                 try:done(result)
                 except Exception as exc:messagebox.showerror(title,str(exc))

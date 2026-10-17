@@ -1,4 +1,4 @@
-# Family Shop v0.13 — offline desktop edition
+# Family Shop v0.14 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -222,3 +222,13 @@ Example: receive 10 units at $1, then 10 at $2, and sell 12. FIFO costs sales at
 Stock drawings at cost are displayed separately and are not deducted as operating expenses. The cost method and opening layers appear in the local change history. Package conversion, exact sales totals, cash reconciliation and cloud snapshots continue to use the same recorded quantities.
 
 All 45 tests pass, including rising/falling prices, receipt-date ordering, FIFO vs weighted-average values, cost-layer carry-forward, fractional-cost preservation, method-default stability and transparent non-sale allocation. The new Windows method controls and layer viewer still need an interaction check. Reference: [IFRS IAS 2 Inventories](https://www.ifrs.org/issued-standards/list-of-standards/ias-2-inventories/) describes FIFO and weighted average for ordinarily interchangeable inventories. This app's costing features do not by themselves establish full financial-reporting compliance.
+
+## v0.14 — lightweight interface animations
+
+Install through **Update App**. Adds a short welcome heading reveal and storefront lift/pulse, an animated accent line and title colour transition when changing pages, smooth sidebar hover colours, highlighted action-card borders with small icon lifts, a pressed-button visual state and indeterminate loading bars during OCR/cloud operations. Financial values are not animated or replaced with demonstration numbers.
+
+Animations use Tk's event loop, not blocking sleeps or extra UI threads. Short effects finish within 150–650 ms, and repeated hover/navigation cancels earlier callbacks instead of stacking them. No decorative animation loop runs continuously while idle; loading indicators run only while their operation is pending. This is page-header motion, not a cross-fade of the entire accounting workspace. Background data tasks keep their existing worker threads.
+
+**History & controls → Reduce motion** applies effects instantly without movement and disables animated loading bars. The preference is stored locally in `motion-settings.json` outside the shop database. Enabling it also completes and cancels pending decorative animations. Disabling it restores effects on subsequent interactions. It is an app preference, not automatic detection of Windows accessibility settings.
+
+All 49 tests pass, including cancellation of stale callbacks during rapid transitions, clean completion, reduced-motion behaviour and saved preference. The effects' appearance and responsiveness still need checking on Windows hardware. No database schema, accounting figures, cloud setup or updater settings change.
