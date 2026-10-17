@@ -61,13 +61,21 @@ class Ledger:
         if not p or not p['start'] <= day <= p['end']:
             raise ValueError('Date must fall inside the selected period.')
 
-    def stock(self, period, product, opening, closing, drawings, broken, opening_cost, price):
+    def stock(self, period, product, opening, closing, drawings, broken, opening_cost, price, sales_total=None):
         vals = [quantity(x) for x in (opening, closing, drawings, broken)]
         received = self.db.execute('SELECT COALESCE(SUM(units),0) FROM receipts WHERE period=? AND product=?', (period,product)).fetchone()[0]
         if vals[1]+vals[2]+vals[3] > vals[0]+received:
             raise ValueError('Closing stock, drawings and breakages exceed available units. Enter receipts first.')
+        sold=vals[0]+received-vals[1]-vals[2]-vals[3]
+        total=money(sales_total) if sales_total is not None else None
+        if total is not None:
+            if not sold and total:raise ValueError('Total sales must be zero when no units were sold.')
+            price_cents=int((Decimal(total)/sold).quantize(Decimal('1'),rounding=ROUND_HALF_UP)) if sold else 0
+        else:price_cents=money(price)
         with self.db:
-            self.db.execute('INSERT INTO stock(period,product,opening,closing,drawings,broken,opening_cost,price) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(period,product) DO UPDATE SET opening=excluded.opening,closing=excluded.closing,drawings=excluded.drawings,broken=excluded.broken,opening_cost=excluded.opening_cost,price=excluded.price', (period,product,*vals,money(opening_cost),money(price)))
+            self.db.execute('INSERT INTO stock(period,product,opening,closing,drawings,broken,opening_cost,price) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(period,product) DO UPDATE SET opening=excluded.opening,closing=excluded.closing,drawings=excluded.drawings,broken=excluded.broken,opening_cost=excluded.opening_cost,price=excluded.price', (period,product,*vals,money(opening_cost),price_cents))
+            self.db.execute('DELETE FROM stock_sales WHERE period=? AND product=?',(period,product))
+            if total is not None:self.db.execute('INSERT INTO stock_sales(period,product,amount) VALUES (?,?,?)',(period,product,total))
 
     def receipt(self, period, product, day, supplier, reference, units, goods, freight):
         self.check_day(period, day)
@@ -94,9 +102,12 @@ class Ledger:
             total=s['opening']+received
             sold=total-s['closing']-s['drawings']-s['broken']
             avg=Decimal(s['opening']*s['opening_cost']+cost)/total if total else Decimal(0)
-            amount=sold*s['price']
+            override=self.db.execute('SELECT amount FROM stock_sales WHERE period=? AND product=?',(period,s['product'])).fetchone()
+            amount=override['amount'] if override else sold*s['price']
+            if override and not sold and amount:raise ValueError('Sales total exists for a product with zero units sold. Review its stock count.')
+            price_label=f"{Decimal(amount)/sold/100:.4f}" if override and sold else f"{s['price']/100:.2f}"
             sales+=amount; cogs+=sold*avg; loss+=s['broken']*avg; closing_value+=s['closing']*avg
-            rows.append([s['name'],s['unit'],s['opening'],received,total,s['closing'],s['drawings'],s['broken'],sold,f"{s['price']/100:.2f}",f'{amount/100:.2f}'])
+            rows.append([s['name'],s['unit'],s['opening'],received,total,s['closing'],s['drawings'],s['broken'],sold,price_label,f'{amount/100:.2f}'])
         cash=self.db.execute('SELECT COALESCE(SUM(cash),0),COALESCE(SUM(ecocash),0),COALESCE(SUM(credit),0),COALESCE(SUM(cashout),0),COALESCE(SUM(expense),0) FROM cash WHERE period=?',(period,)).fetchone()
         accounted=sum(cash[:4])
         totals={'Stock-implied sales':sales,'Cash handed over':cash[0],'EcoCash sales receipts':cash[1],'Unpaid credit sales':cash[2],'Cash paid out from sales':cash[3],'Total accounted for':accounted,'Unreconciled difference (positive = short)':sales-accounted,'Cost of goods sold':cogs,'Gross profit':sales-cogs,'Breakage expense at cost':loss,'Operating expenses':cash[4],'Net profit before tax (stock-implied)':sales-cogs-loss-cash[4],'Closing inventory at cost':closing_value}
@@ -190,6 +201,7 @@ class Ledger:
         """Additive migration: log future changes and guard writes in locked periods."""
         import getpass
         self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS stock_sales(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), product INTEGER REFERENCES products(id), amount INTEGER NOT NULL, UNIQUE(period,product));
         CREATE TABLE IF NOT EXISTS product_packages(id INTEGER PRIMARY KEY, product INTEGER UNIQUE REFERENCES products(id), package TEXT NOT NULL, per_package INTEGER NOT NULL CHECK(per_package>0));
         CREATE TABLE IF NOT EXISTS receipt_packages(id INTEGER PRIMARY KEY, receipt INTEGER UNIQUE REFERENCES receipts(id), package TEXT NOT NULL, per_package INTEGER NOT NULL, packages INTEGER NOT NULL, loose INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS period_locks(period INTEGER PRIMARY KEY REFERENCES periods(id), reason TEXT NOT NULL);
@@ -199,7 +211,7 @@ class Ledger:
         INSERT OR IGNORE INTO change_context VALUES (1,'Local user','Record saved');
         ''')
         self.db.execute('UPDATE change_context SET actor=? WHERE id=1',(getpass.getuser(),))
-        for table in ['products','periods','stock','receipts','cash','orders','deliveries','customers','debts','repayments','period_locks','product_packages','receipt_packages']:
+        for table in ['products','periods','stock','receipts','cash','orders','deliveries','customers','debts','repayments','period_locks','product_packages','receipt_packages','stock_sales']:
             columns=[r['name'] for r in self.db.execute(f'PRAGMA table_info({table})')]
             def jsonrow(prefix):
                 return 'json_object('+','.join("'"+c+"',"+prefix+'.'+c for c in columns)+')'
@@ -211,7 +223,7 @@ class Ledger:
                 self.db.execute(f'''CREATE TRIGGER IF NOT EXISTS audit_{table}_{action} AFTER {action} ON {table} BEGIN
                     INSERT INTO audit_log(actor,reason,entity,action,record_id,before_data,after_data)
                     SELECT actor,reason,'{table}','{action}',{prefix}.{idcol},{before},{after} FROM change_context WHERE id=1; END''')
-        for table in ['stock','receipts','cash','debts']:
+        for table in ['stock','receipts','cash','debts','stock_sales']:
             for action,prefixes in [('INSERT',['NEW']),('UPDATE',['OLD','NEW']),('DELETE',['OLD'])]:
                 guard=' OR '.join(f'EXISTS(SELECT 1 FROM period_locks WHERE period={prefix}.period)' for prefix in prefixes)
                 self.db.execute(f"CREATE TRIGGER IF NOT EXISTS guard_{table}_{action} BEFORE {action} ON {table} WHEN {guard} BEGIN SELECT RAISE(ABORT,'Reporting period is locked. Reopen it with a reason before making changes.'); END")
@@ -279,6 +291,21 @@ class Ledger:
             receipt=self.db.execute('INSERT INTO receipts(period,product,day,supplier,reference,units,goods,freight) VALUES (?,?,?,?,?,?,?,?)',(period,product,day,supplier,reference,units,money(goods),money(freight))).lastrowid
             self.db.execute('INSERT INTO receipt_packages(receipt,package,per_package,packages,loose) VALUES (?,?,?,?,?)',(receipt,info['package'],info['per_package'],packages,loose))
         return units
+
+
+    def stock_preview(self,period,product,opening,closing,drawings,broken,opening_cost,price,sales_total=None):
+        opening,closing,drawings,broken=[quantity(x) for x in (opening,closing,drawings,broken)]
+        received,cost=self.db.execute('SELECT COALESCE(SUM(units),0),COALESCE(SUM(goods+freight),0) FROM receipts WHERE period=? AND product=?',(period,product)).fetchone()
+        available=opening+received;sold=available-closing-drawings-broken
+        if sold<0:raise ValueError('Closing, drawings and breakages exceed available units.')
+        average=(Decimal(opening*money(opening_cost)+cost)/available/100) if available else Decimal(0)
+        if sales_total is not None:
+            amount=Decimal(money(sales_total))/100
+            if not sold and amount:raise ValueError('Sales total must be zero when no units were sold.')
+            unit=amount/sold if sold else Decimal(0)
+        else:
+            unit=Decimal(money(price))/100;amount=sold*unit
+        return {'sold':sold,'unit_cost':average,'unit_price':unit,'sales':amount}
 
 
 class Cloud:
@@ -457,3 +484,10 @@ def validate_package(package,per_package):
     if not per_package:raise ValueError('Units per package must be greater than zero.')
     if package=='Individual' and per_package!=1:raise ValueError('An individual contains one unit. Choose a bulk package type for more units.')
     return per_package
+
+
+
+def purchase_unit_cost(units,goods,freight):
+    units=quantity(units)
+    if not units:raise ValueError('Enter received units first.')
+    return Decimal(money(goods))/units/100,Decimal(money(goods)+money(freight))/units/100

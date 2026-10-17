@@ -1,4 +1,4 @@
-# Family Shop v0.11 — offline desktop edition
+# Family Shop v0.12 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -190,3 +190,18 @@ Use **Overview → Products → Edit packaging** to set a package size for exist
 Stock-count entry, scanned/imported rows, purchase orders and order-delivery entry still accept **individual units**. Package conversion is currently provided in the main Record delivery form. For example, order 24 individual bottles for two crates of 12. Scanned product creation defaults to Individual/1; configure package sizes after import if needed. This version supports one configured package size per product, not nested cases of packs or fractional kg/litre quantities.
 
 The update adds package metadata without changing existing stock amounts. All 35 tests pass, including crates plus loose bottles, sugar cases, per-unit costing, historical size retention, invalid sizes, locked periods and correcting package receipts. The new Windows forms still need an interaction check on your PC.
+
+## v0.12 — visible automatic unit costs and sales amounts
+
+Install with **Update App**. Purchase costs were already included in periodic weighted-average costing; this update also shows the calculations during entry.
+
+- Main goods-received form: package quantities convert to individual units. **Purchase cost/unit = total goods cost ÷ individual units received**. **Including delivery/unit = (goods cost + delivery cost) ÷ individual units received**. Both are shown to four decimal places; enter costs for the entire delivery.
+- Receive-order form: the same per-unit cost preview is shown for its individual-unit quantity.
+- Daily registers: received goods have purchase cost/unit and cost including delivery/unit columns. Use horizontal scrolling for wide tables. Voided zero-unit receipts show zero cost/unit rather than dividing by zero.
+- Stock entry: the preview shows units sold, weighted-average unit cost, selling price per unit and total sales. Units sold = opening + received − closing − drawings − broken units. Opening stock still needs its opening unit cost (or the carried-forward cost); newly received stock costs come from its receipts automatically.
+- Choose **Selling price per unit** to calculate total sales as units sold × unit price. Or choose **Total sales amount** to derive average selling price = entered total ÷ units sold. Only the selected input method is used; the other amount field is ignored. All monetary inputs are dollar amounts, not cents.
+- When using a total sales amount, the exact total is retained separately in cents. For example, three units sold for $10 show an average price of $3.3333 and retain $10.00 revenue, not $9.99. This is an average, not proof that every item had that price. Switching back to price-per-unit removes that total override. A nonzero sales total is rejected if units sold are zero. Updating stock/receipts later can change the derived average; the entered total remains until edited. Recheck it if you correct earlier data.
+
+Entered total sales amounts belong to the selected product/period, not the day's overall cash collection. Do not enter all shop sales against each product. Manual daily-money reconciliation remains separate. Profit uses cost of goods sold, not all purchases as an immediate expense. Report sales totals include any entered product sales amounts; reports identify derived average selling prices in the explanatory note. Carry-forward uses the stored selling price rounded to cents for the next period; review your next-period price.
+
+All 39 tests pass, including individual-unit conversion, delivery-inclusive cost, preview/report agreement, exact sales totals with repeating average prices, mode switching and rejection of sales with zero units sold. New Windows form previews still need an interaction check.
