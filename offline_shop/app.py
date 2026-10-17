@@ -146,7 +146,7 @@ class App(tk.Tk):
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
             button.bind('<Enter>',lambda e,b=button:b.configure(bg='#203f47'))
             button.bind('<Leave>',lambda e,b=button,i=index:b.configure(bg='#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.10  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.11  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -183,6 +183,7 @@ class App(tk.Tk):
             ttk.Label(card,text=title,style='CardTitle.TLabel').pack(anchor='w')
             ttk.Label(card,text=detail,style='CardBody.TLabel',wraplength=310).pack(anchor='w',pady=(8,18))
             ttk.Button(card,text=button,command=command,style='Accent.TButton').pack(anchor='w')
+            if i==0:ttk.Button(card,text='Edit packaging',command=self.edit_packaging).pack(anchor='w',pady=(8,0))
         ttk.Label(actions,text='Keep your numbers reliable',style='Section.TLabel').pack(anchor='w',pady=(10,8))
         ttk.Label(actions,text='Count individual units and include purchase costs. Profit stays provisional until stock and money agree.\nKeep old debt collections separate from new sales. Back up your records regularly.',style='Muted.TLabel',wraplength=780).pack(anchor='w')
         report=self.add_scroll_page('Stock sheet & income statement')
@@ -200,8 +201,10 @@ class App(tk.Tk):
         self.tree.pack(fill='both',expand=True);scroll.pack(fill='x')
         self.summary=tk.Text(report,height=12,font=('Consolas',10),state='disabled',bg='#ffffff',fg='#244047',relief='flat',padx=16,pady=14,highlightthickness=1,highlightbackground='#dde6e6');self.summary.pack(fill='both',expand=True,pady=8)
         self.log=self.add_scroll_page('Received orders & daily money')
+        ttk.Label(self.log,text='Product packaging — all products').pack(anchor='w',pady=6)
+        self.packaging_table=self.register_table(self.log,['Product','Individual unit','Package type','Units per package'])
         ttk.Label(self.log,text='Goods received — selected period').pack(anchor='w',pady=6)
-        self.receipt_table=self.register_table(self.log,['Date','Product','Supplier','Invoice','Units','Goods USD','Delivery USD'])
+        self.receipt_table=self.register_table(self.log,['Date','Product','Supplier','Invoice','Packages / loose','Total units','Goods USD','Delivery USD'])
         ttk.Label(self.log,text='Daily money — selected period').pack(anchor='w',pady=6)
         self.cash_table=self.register_table(self.log,['Date','Cash USD','EcoCash USD','Credit USD','Paid out USD','Expenses USD','Notes'])
         ttk.Label(workspace,text='Saved on this computer  •  USD  •  Back up regularly',style='Muted.TLabel').pack(anchor='w',pady=(12,0))
@@ -401,7 +404,7 @@ class App(tk.Tk):
         if self.period.get() not in self.periods:raise ValueError('Create and select a reporting period first.')
         return self.periods[self.period.get()]
 
-    def form(self,title,fields,save,loader=None):
+    def form(self,title,fields,save,loader=None,preview=None):
         win=tk.Toplevel(self);win.title(title);win.transient(self);win.grab_set();win.configure(bg='#f2f6f6')
         win.resizable(False,False)
         win.geometry(f'+{self.winfo_rootx()+220}+{self.winfo_rooty()+100}')
@@ -419,13 +422,31 @@ class App(tk.Tk):
             for key in ('Product','Date YYYY-MM-DD','Receipt'):
                 if key in values: values[key].trace_add('write',load_existing)
             load_existing()
+        if preview:
+            hint=ttk.Label(win,text='',style='Muted.TLabel',wraplength=480)
+            hint.grid(row=len(fields),column=0,columnspan=2,sticky='w',padx=16,pady=8)
+            def update_hint(*_):
+                try:hint.configure(text=preview({k:v.get() for k,v in values.items()}))
+                except Exception:hint.configure(text='Enter whole package quantities and individual units to see the conversion.')
+            for value in values.values():value.trace_add('write',update_hint)
+            update_hint()
         def submit():
             try:save({k:v.get() for k,v in values.items()});win.destroy();self.refresh()
             except Exception as e:messagebox.showerror('Please check',str(e),parent=win)
-        ttk.Button(win,text='Save record',command=submit,style='Accent.TButton').grid(row=len(fields),column=1,sticky='e',padx=16,pady=16)
+        ttk.Button(win,text='Save record',command=submit,style='Accent.TButton').grid(row=len(fields)+(1 if preview else 0),column=1,sticky='e',padx=16,pady=16)
 
     def product(self):
-        self.form('Add product',[('Product name','',None),('Unit','each',None)],lambda v:self.ledger.product(v['Product name'],v['Unit']))
+        from ledger import PACKAGE_TYPES
+        self.form('Add product and package size',[('Product name','',None),('Individual unit','each',None),('Package type','Individual',PACKAGE_TYPES),('Units per package','1',None)],lambda v:self.ledger.product(v['Product name'],v['Individual unit'],v['Package type'],v['Units per package']),preview=lambda v:f"One {v['Package type'].lower()} contains {v['Units per package']} individual {v['Individual unit']} unit(s). Stock and selling prices use individual units.")
+
+    def edit_packaging(self):
+        from ledger import PACKAGE_TYPES
+        products={r['name']:r['id'] for r in self.ledger.db.execute('SELECT id,name FROM products ORDER BY name')}
+        if not products:messagebox.showinfo('Products','Add a product first.');return
+        def load(v):
+            info=self.ledger.packaging(products[v['Product']])
+            return {'Package type':info['package'],'Units per package':info['per_package']}
+        self.form('Edit product packaging',[('Product',next(iter(products)),list(products)),('Package type','Individual',PACKAGE_TYPES),('Units per package','1',None)],lambda v:self.ledger.set_packaging(products[v['Product']],v['Package type'],v['Units per package']),loader=load,preview=lambda v:'Changes affect future package conversions only. Existing deliveries keep their original unit quantities and package size.')
 
     def product_form(self,title,fields,save,loader=None):
         try:
@@ -440,7 +461,18 @@ class App(tk.Tk):
         self.form('Create reporting period',[('Start date YYYY-MM-DD',today,None),('End date YYYY-MM-DD',today,None)],lambda v:(self.ledger.period(*v.values()),self.reload_periods()))
 
     def receipt(self):
-        self.product_form('Goods received (one order line)', [('Date YYYY-MM-DD',date.today().isoformat()),('Supplier',''),('Invoice / order reference',''),('Individual units received','0'),('Total goods cost','0'),('Delivery cost for this line','0')],lambda p,i,v:self.ledger.receipt(p,i,*v))
+        try:
+            p=self.pid()
+            products={r['name']:dict(r) for r in self.ledger.db.execute('SELECT * FROM products ORDER BY name')}
+            if not products:raise ValueError('Add a product first.')
+            def preview(v):
+                product=products[v['Product']];info=self.ledger.packaging(product['id'])
+                units=self.ledger.package_units(product['id'],v['Packages received'],v['Loose units received'])
+                return f"{info['package']}: {info['per_package']} {product['unit']} unit(s) inside. {v['Packages received']} × {info['per_package']} + {v['Loose units received']} loose = {units} individual units. Enter the total goods cost for this whole delivery, not per package."
+            def save(v):
+                self.ledger.receipt_bulk(p,products[v['Product']]['id'],v['Date YYYY-MM-DD'],v['Supplier'],v['Invoice / reference'],v['Packages received'],v['Loose units received'],v['Total goods cost'],v['Total delivery cost'])
+            self.form('Goods received — packages and loose units',[('Product',next(iter(products)),list(products)),('Date YYYY-MM-DD',date.today().isoformat(),None),('Supplier','',None),('Invoice / reference','',None),('Packages received','0',None),('Loose units received','0',None),('Total goods cost','0',None),('Total delivery cost','0',None)],save,preview=preview)
+        except Exception as exc:messagebox.showerror('Goods received',str(exc))
 
     def stock(self):
         self.product_form('Save complete stock count (replaces existing count)', [('Opening units','0'),('Closing units','0'),('Drawings units','0'),('Broken units','0'),('Opening cost per unit','0'),('Selling price per unit','0')],lambda p,i,v:self.ledger.stock(p,i,*v),loader=self.stock_defaults)
@@ -528,13 +560,13 @@ class App(tk.Tk):
             self.customer_table.insert('','end',values=[r['name'],f"{r['credit']/100:.2f}",f"{r['paid']/100:.2f}",f"{(r['credit']-r['paid'])/100:.2f}"])
 
     def new_order(self):
-        self.product_form('Purchase order',[('Supplier',''),('Order reference',''),('Order date',date.today().isoformat()),('Units ordered','1'),('Estimated total cost','0')],lambda p,i,v:self.ledger.order(i,*v))
+        self.product_form('Purchase order',[('Supplier',''),('Order reference',''),('Order date',date.today().isoformat()),('Individual units ordered','1'),('Estimated total cost','0')],lambda p,i,v:self.ledger.order(i,*v))
 
     def deliver(self):
         try:
             p=self.pid()
             if not self.orders:raise ValueError('No outstanding orders.')
-            self.form('Receive an order',[('Order',next(iter(self.orders)),list(self.orders))]+[(k,d,None) for k,d in [('Delivery date',date.today().isoformat()),('Units received','1'),('Goods cost for this delivery','0'),('Delivery cost for this delivery','0')]],lambda v:self.ledger.receive_order(self.orders[v.pop('Order')],p,*v.values()))
+            self.form('Receive an order',[('Order',next(iter(self.orders)),list(self.orders))]+[(k,d,None) for k,d in [('Delivery date',date.today().isoformat()),('Individual units received','1'),('Goods cost for this delivery','0'),('Delivery cost for this delivery','0')]],lambda v:self.ledger.receive_order(self.orders[v.pop('Order')],p,*v.values()))
         except ValueError as e:messagebox.showerror('Please check',str(e))
 
     def new_debt(self):
@@ -617,12 +649,21 @@ class App(tk.Tk):
         box.rowconfigure(0,weight=1);box.columnconfigure(0,weight=1)
         return tree
 
+    def receipt_package_label(self,receipt):
+        info=self.ledger.db.execute('SELECT * FROM receipt_packages WHERE receipt=?',(receipt,)).fetchone()
+        if not info:return 'Recorded as individual units'
+        return f"{info['packages']} {info['package'].lower()} × {info['per_package']} + {info['loose']} loose"
+
     def refresh_registers(self):
         for tree in (self.receipt_table,self.cash_table):tree.delete(*tree.get_children())
+        self.packaging_table.delete(*self.packaging_table.get_children())
+        for product in self.ledger.db.execute('SELECT * FROM products ORDER BY name'):
+            info=self.ledger.packaging(product['id'])
+            self.packaging_table.insert('','end',values=[product['name'],product['unit'],info['package'],info['per_package']])
         try:p=self.pid()
         except ValueError:return
         for r in self.ledger.db.execute('SELECT r.*,p.name FROM receipts r JOIN products p ON p.id=r.product WHERE period=? ORDER BY day,r.id',(p,)):
-            self.receipt_table.insert('','end',values=[r['day'],r['name'],r['supplier'],r['reference'],r['units'],f"{r['goods']/100:.2f}",f"{r['freight']/100:.2f}"])
+            self.receipt_table.insert('','end',values=[r['day'],r['name'],r['supplier'],r['reference'],self.receipt_package_label(r['id']),r['units'],f"{r['goods']/100:.2f}",f"{r['freight']/100:.2f}"])
         for r in self.ledger.db.execute('SELECT * FROM cash WHERE period=? ORDER BY day',(p,)):
             self.cash_table.insert('','end',values=[r['day']]+[f"{r[k]/100:.2f}" for k in ['cash','ecocash','credit','cashout','expense']]+[r['note']])
 

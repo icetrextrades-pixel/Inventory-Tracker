@@ -1,4 +1,4 @@
-# Family Shop v0.10 — offline desktop edition
+# Family Shop v0.11 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -173,3 +173,20 @@ Install with **Update App**. The old overview-only global wheel callback has bee
 Every section now has a scrollable page, so smaller windows can reach content without relying solely on an inner table's scrollbar. The overview uses pixel-based movement. Vertical click/touch dragging starts after an 8-pixel threshold on page backgrounds, cards, labels, tables and disabled/read-only text areas. Buttons and editable fields keep normal click/edit/select behaviour. This supports touchscreen gestures delivered by Windows as pointer drag events; it is not a native multi-touch or momentum/inertia implementation. Mouse-wheel, trackpad and touchscreen hardware behaviour must still be checked on Windows.
 
 All 30 tests pass, including wheel routing over child cards, nested table edge fallback, small trackpad delta accumulation, horizontal scrolling, drag thresholds and preserving button/entry interactions. No accounting data or calculation rules change.
+
+## v0.11 — bulk packages and individual units
+
+Use **Update App**. When adding a product, specify its **individual unit**, **package type** and **units per package**. Supported package types: Individual, Box, Case, Crate, Pack, Carton, Sack, Bag, Bundle, Tray, Pallet, Bale, Drum, Tub, Roll and Other. Counts must be positive whole numbers. An Individual package contains exactly one unit. Package sizes are entered by you, not guessed from the brand.
+
+Examples:
+
+- Castle Quart: individual unit `bottle`, package type `Crate`, units per package `12`.
+- Sugar: individual unit `packet`, package type `Case`, units per package `10`.
+
+In **Record delivery**, choose the product, enter full packages and any loose individual units. A live preview shows the conversion before saving: `2 crates × 12 + 3 loose = 27 bottles`. Enter the total goods purchase cost for the whole delivery and total delivery cost, not cost per package or bottle. Stock balances, cost calculations and selling prices continue to use individual units, preventing a crate from being counted as one bottle.
+
+Use **Overview → Products → Edit packaging** to set a package size for existing products or change it for future deliveries. Products created before this update default to Individual/1 until you configure them; their saved stock and receipts are not converted retroactively. The Daily registers page includes a product packaging catalogue and package breakdowns for new deliveries. Each bulk receipt saves the package type and size used when received, so later edits do not rewrite history. Correcting a receipt in individual units clears its old package breakdown to avoid displaying a stale conversion; its prior details remain in the change history.
+
+Stock-count entry, scanned/imported rows, purchase orders and order-delivery entry still accept **individual units**. Package conversion is currently provided in the main Record delivery form. For example, order 24 individual bottles for two crates of 12. Scanned product creation defaults to Individual/1; configure package sizes after import if needed. This version supports one configured package size per product, not nested cases of packs or fractional kg/litre quantities.
+
+The update adds package metadata without changing existing stock amounts. All 35 tests pass, including crates plus loose bottles, sugar cases, per-unit costing, historical size retention, invalid sizes, locked periods and correcting package receipts. The new Windows forms still need an interaction check on your PC.

@@ -37,11 +37,14 @@ class Ledger:
         self.upgrade()
         self.install_controls()
 
-    def product(self, name, unit):
+    def product(self, name, unit, package="Individual", per_package=1):
         if not name.strip() or not unit.strip():
             raise ValueError('Product name and unit are required.')
+        per_package=validate_package(package,per_package)
         with self.db:
-            return self.db.execute('INSERT INTO products(name,unit) VALUES (?,?)', (name.strip(), unit.strip())).lastrowid
+            pid=self.db.execute('INSERT INTO products(name,unit) VALUES (?,?)', (name.strip(), unit.strip())).lastrowid
+            self.db.execute('INSERT INTO product_packages(product,package,per_package) VALUES (?,?,?)',(pid,package,per_package))
+            return pid
 
     def period(self, start, end):
         a, b = date.fromisoformat(start), date.fromisoformat(end)
@@ -187,6 +190,8 @@ class Ledger:
         """Additive migration: log future changes and guard writes in locked periods."""
         import getpass
         self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS product_packages(id INTEGER PRIMARY KEY, product INTEGER UNIQUE REFERENCES products(id), package TEXT NOT NULL, per_package INTEGER NOT NULL CHECK(per_package>0));
+        CREATE TABLE IF NOT EXISTS receipt_packages(id INTEGER PRIMARY KEY, receipt INTEGER UNIQUE REFERENCES receipts(id), package TEXT NOT NULL, per_package INTEGER NOT NULL, packages INTEGER NOT NULL, loose INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS period_locks(period INTEGER PRIMARY KEY REFERENCES periods(id), reason TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), mode TEXT NOT NULL, digest TEXT NOT NULL, source TEXT NOT NULL, UNIQUE(period,mode,digest));
         CREATE TABLE IF NOT EXISTS change_context(id INTEGER PRIMARY KEY CHECK(id=1), actor TEXT, reason TEXT);
@@ -194,7 +199,7 @@ class Ledger:
         INSERT OR IGNORE INTO change_context VALUES (1,'Local user','Record saved');
         ''')
         self.db.execute('UPDATE change_context SET actor=? WHERE id=1',(getpass.getuser(),))
-        for table in ['products','periods','stock','receipts','cash','orders','deliveries','customers','debts','repayments','period_locks']:
+        for table in ['products','periods','stock','receipts','cash','orders','deliveries','customers','debts','repayments','period_locks','product_packages','receipt_packages']:
             columns=[r['name'] for r in self.db.execute(f'PRAGMA table_info({table})')]
             def jsonrow(prefix):
                 return 'json_object('+','.join("'"+c+"',"+prefix+'.'+c for c in columns)+')'
@@ -247,8 +252,33 @@ class Ledger:
                 if units+other>ordered:raise ValueError('Corrected delivery exceeds the order quantity.')
             self.db.execute('UPDATE change_context SET reason=? WHERE id=1',(reason.strip(),))
             self.db.execute('UPDATE receipts SET units=?,goods=?,freight=? WHERE id=?',(units,goods,freight,receipt_id))
+            self.db.execute('DELETE FROM receipt_packages WHERE receipt=?',(receipt_id,))
             if delivery:self.db.execute('UPDATE deliveries SET units=? WHERE id=?',(units,delivery['id']))
             self.db.execute("UPDATE change_context SET reason='Record saved' WHERE id=1")
+
+
+    def packaging(self,product):
+        row=self.db.execute('SELECT package,per_package FROM product_packages WHERE product=?',(product,)).fetchone()
+        return dict(row) if row else {'package':'Individual','per_package':1}
+
+    def set_packaging(self,product,package,per_package):
+        per_package=validate_package(package,per_package)
+        with self.db:
+            self.db.execute('INSERT INTO product_packages(product,package,per_package) VALUES (?,?,?) ON CONFLICT(product) DO UPDATE SET package=excluded.package,per_package=excluded.per_package',(product,package,per_package))
+
+    def package_units(self,product,packages,loose):
+        info=self.packaging(product)
+        return quantity(packages)*info['per_package']+quantity(loose)
+
+    def receipt_bulk(self,period,product,day,supplier,reference,packages,loose,goods,freight):
+        self.check_day(period,day)
+        packages,loose=quantity(packages),quantity(loose)
+        info=self.packaging(product);units=self.package_units(product,packages,loose)
+        if not units:raise ValueError('Enter at least one package or individual unit.')
+        with self.db:
+            receipt=self.db.execute('INSERT INTO receipts(period,product,day,supplier,reference,units,goods,freight) VALUES (?,?,?,?,?,?,?,?)',(period,product,day,supplier,reference,units,money(goods),money(freight))).lastrowid
+            self.db.execute('INSERT INTO receipt_packages(receipt,package,per_package,packages,loose) VALUES (?,?,?,?,?)',(receipt,info['package'],info['per_package'],packages,loose))
+        return units
 
 
 class Cloud:
@@ -416,3 +446,14 @@ def import_reviewed(ledger,period,mode,text,source):
         clone.db.backup(ledger.db)
         return len(rows)
     finally:clone.db.close()
+
+
+PACKAGE_TYPES=['Individual','Box','Case','Crate','Pack','Carton','Sack','Bag','Bundle','Tray','Pallet','Bale','Drum','Tub','Roll','Other']
+
+
+def validate_package(package,per_package):
+    if package not in PACKAGE_TYPES:raise ValueError('Choose a package type from the list.')
+    per_package=quantity(per_package)
+    if not per_package:raise ValueError('Units per package must be greater than zero.')
+    if package=='Individual' and per_package!=1:raise ValueError('An individual contains one unit. Choose a bulk package type for more units.')
+    return per_package
