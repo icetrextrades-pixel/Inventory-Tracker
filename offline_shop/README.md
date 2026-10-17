@@ -1,4 +1,4 @@
-# Mutowei Investments v0.16 — three-shop desktop app
+# Mutowei Investments v0.17 — three-shop desktop app
 
 **WhatKind?**
 
@@ -274,3 +274,29 @@ Install through **Update App**. Adds explicit `TouchpadScroll` and `Shift-Touchp
 The touchpad binding receives raw Tcl event substitutions, decodes the signed horizontal/vertical delta components, routes both axes to the correct viewport and accumulates small movements for line-based tables/text. Page canvases move at pixel resolution. Shift swaps touchpad axes for horizontal scrolling. Wheel events now use the live pointer position, rather than relying on wheel-event root coordinates or the focused widget. App-wide MouseWheel fallback bindings cover newly mapped widgets, while handled events stop before native handlers to avoid duplicate movement. Touchscreen drag handlers and manual scrollbar controls are unchanged.
 
 All 57 tests pass, including signed packed-delta decoding, precision gestures independent of MouseWheel events, pointer-over-table while an entry has focus, small delta accumulation and Shift-horizontal routing. This is a compatibility fix; actual Windows touchpad-driver behaviour still needs testing on the user's hardware. Reference: [Tk TIP 684, Touchpad Scrolling](https://core.tcl-lang.org/tips/doc/main/tip/684.md).
+
+## v0.17 — owner login and private admin security
+
+Install through **Update App**. At the next launch, create the single local owner account with your **name** and a **password/passphrase of 12–256 characters**. This password belongs to Mutowei Investments and is independent of your Supabase/Classyard password. Optional recovery question/answer can be configured during setup. Setup generates a random reserved **MI- recovery key**: copy/save it somewhere private outside this PC, then confirm it is saved. The full key cannot be retrieved later. Until setup/login succeeds, the app does not open the shop ledgers or financial screens.
+
+Subsequent launches require the configured name and password. Name matching ignores case and repeated spaces. Only one local owner account is supported; there are no staff roles or additional user accounts. First setup assumes the legitimate owner controls the Windows account/device; it cannot determine who owns an unconfigured installation.
+
+### Wrong attempts and private alerts
+
+Three failed login attempts trigger a **60-second lockout**, with limits applied both globally and per claimed name to prevent cycling names. Counters survive an app restart. **Admin security** contains private alerts for the third failure and recent security activity, showing the name entered, UTC time, attempt type and outcome. A name entered at the login screen is a **claim, not verified identity**. Passwords are never included in these logs. Current displays show the newest 200 alerts/activity entries; stored history is retained beyond that. Use Refresh alerts to reload it. Recovery and admin reauthentication have separate throttles.
+
+### Forgot password
+
+- **Backup key:** works offline. Enter the owner name, reserved MI- key and a new password. Successful recovery rotates the key; save the new key because the previous key becomes invalid.
+- **Security question:** optional. If configured, enter its answer and a new password. Answers ignore case and repeated spaces. Use a non-obvious answer of at least 8 characters. Security questions are easier to guess than a private random key; leave this route disabled if you do not need it. Successful recovery also rotates the backup key.
+- **Email code:** configure and verify a recovery email in Admin security first. Supply the existing Supabase project URL/public key, your current local password and an existing Supabase user's email. Verification sends an OTP and binds the email and returned account ID only after code verification. The app does not automatically register accounts or change project email templates. The Supabase **Magic Link** email template must include `{{ .Token }}` for this code-entry flow; if only a link arrives, use your reserved key and configure the template carefully, since Classyard shares that project. During forgot-password recovery, Request code sends to the previously verified address, and the entered code must prove the same email/account. Successful recovery replaces only the local password and rotates the backup key; the Supabase password is untouched. Email delivery, templates, quotas and live end-to-end verification still require your project/hardware check.
+
+After login, **Admin security** lets you change the password, rotate the reserved key, change/disable the question, verify the recovery email, refresh private alerts or **Lock app**. Password/key/question/email settings require the current local password. Lock app hides the financial windows, signs out the local cloud session and requires owner login again. No automatic inactivity lock is enabled in this version; lock the app or Windows when leaving the PC.
+
+### Storage and protection limits
+
+Password, reserved-key and answer verification use independent random salts and PBKDF2-HMAC-SHA256 with 600,000 iterations; comparisons use constant-time digest checks. Passwords, raw reserved keys, answers and email session tokens are not stored as plaintext. Email OTP tokens are not persisted. A verified-email recovery proof is short-lived and single-use. The configured recovery email, public project settings and usernames in private alerts are stored locally as necessary account metadata.
+
+Credentials/logs are in the local `security/owner.sqlite3`, outside all three shop databases. **Shop cloud uploads, scan imports and normal shop backups do not include credentials or private login logs.** Future updates make a separate security backup inside the same security folder; keep it private. POSIX permissions are restricted where supported; on Windows protection depends on the Windows profile/file permissions. The app does not change Windows ACLs or encrypt either database. Someone who controls your Windows account, filesystem or Python source can read financial files or bypass/reset this local UI gate. This is owner access control inside the app, not disk encryption or tamper-resistant identity/security monitoring. Do not delete the security folder as a routine recovery step; use the recovery methods.
+
+All **69 automated tests pass**, including salted hashing, revoked sessions, three-failure alerts, persistent lockout, cycling names, backup-key replacement, question recovery, admin reauthentication, verified-email identity binding, single-use/expired recovery proof and OTP payload validation. GUI login/lock/recovery interactions and actual email delivery require verification on Windows. References: [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [Supabase email OTP](https://supabase.com/docs/guides/auth/auth-email-passwordless).

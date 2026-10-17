@@ -190,8 +190,146 @@ def migrate_legacy(root,shop):
     return destination
 
 
+def show_recovery_key(parent,key,on_done=None):
+    window=tk.Toplevel(parent);window.title('Save your reserved recovery key');window.transient(parent);window.grab_set();window.resizable(False,False)
+    ttk.Label(window,text='Keep this key somewhere private, outside this PC.\nIt can reset the owner password. The full key will not be stored.',padding=18).pack(anchor='w')
+    field=ttk.Entry(window,width=50,font=('Consolas',12));field.insert(0,key);field.configure(state='readonly');field.pack(padx=18,pady=8)
+    def copy():window.clipboard_clear();window.clipboard_append(key)
+    ttk.Button(window,text='Copy key',command=copy).pack(anchor='w',padx=18,pady=6)
+    saved=tk.BooleanVar(value=False)
+    ttk.Checkbutton(window,text='I have saved this key privately',variable=saved).pack(anchor='w',padx=18,pady=8)
+    def finish():
+        if not saved.get():messagebox.showinfo('Save the key','Save the key and tick the checkbox before continuing.',parent=window);return
+        window.destroy()
+        if on_done:on_done()
+    ttk.Button(window,text='Continue',command=finish).pack(anchor='e',padx=18,pady=18)
+    window.protocol('WM_DELETE_WINDOW',lambda:None)
+
+
+class OwnerGate:
+    def __init__(self,store,parent=None):
+        self.store=store;self.session=None;self.parent=parent;self.email_client=None
+        set_process_identity();folder=materialize_brand()
+        self.window=tk.Toplevel(parent) if parent else tk.Tk()
+        self.window.title('Mutowei Investments — owner login');self.window.geometry('630x690');self.window.minsize(600,660);self.window.configure(bg='#142d32')
+        self.image=tk.PhotoImage(master=self.window,file=str(folder/'mutowei-v1.png')).subsample(3,3)
+        if os.name=='nt':self.window.iconbitmap(default=str(folder/'mutowei-v1.ico'))
+        tk.Label(self.window,image=self.image,bg='#142d32').pack(pady=(22,8))
+        tk.Label(self.window,text='Mutowei Investments',font=('Segoe UI',22,'bold'),fg='white',bg='#142d32').pack()
+        tk.Label(self.window,text='WhatKind?  •  Owner access',font=('Segoe UI',11),fg='#9fdac5',bg='#142d32').pack(pady=(4,14))
+        self.frame=ttk.Frame(self.window,padding=20);self.frame.pack(fill='both',expand=True,padx=22,pady=(0,22))
+        self.window.protocol('WM_DELETE_WINDOW',self.window.destroy)
+        self.show_setup() if not self.store.owner() else self.show_login()
+        if parent:self.window.grab_set()
+    def clear(self,title):
+        for child in self.frame.winfo_children():child.destroy()
+        ttk.Label(self.frame,text=title,font=('Segoe UI',16,'bold')).pack(anchor='w',pady=(0,12))
+    def field(self,label,secret=False):
+        ttk.Label(self.frame,text=label).pack(anchor='w',pady=(5,2))
+        value=tk.StringVar(master=self.window)
+        entry=ttk.Entry(self.frame,textvariable=value,show='•' if secret else '',width=54);entry.pack(fill='x')
+        return value
+    def error(self,error):messagebox.showerror('Owner access',str(error),parent=self.window)
+    def finish(self,session):self.session=session;self.window.destroy()
+    def show_setup(self):
+        self.clear('Set up the owner account')
+        name=self.field('Owner name');password=self.field('Password / passphrase (at least 12 characters)',True);confirm=self.field('Confirm password',True)
+        question=self.field('Recovery question (optional)');answer=self.field('Answer (optional; at least 8 characters)',True)
+        ttk.Label(self.frame,text='A reserved recovery key will be generated next.\nThis login protects the app interface; it does not encrypt database files.',wraplength=520).pack(anchor='w',pady=10)
+        def save():
+            try:
+                if password.get()!=confirm.get():raise ValueError('Passwords do not match.')
+                key=self.store.setup(name.get(),password.get(),question.get(),answer.get())
+                session=self.store.login(name.get(),password.get());password.set('');confirm.set('');answer.set('')
+                show_recovery_key(self.window,key,lambda:self.finish(session))
+            except Exception as exc:self.error(exc)
+        ttk.Button(self.frame,text='Create owner account',command=save).pack(anchor='e',pady=10)
+    def show_login(self):
+        self.email_client=None
+        self.clear('Sign in to your shops')
+        name=self.field('Your name');password=self.field('Password',True)
+        ttk.Label(self.frame,text='Only the configured owner account can open the records.\nThree failed attempts trigger a temporary lockout and private alert.',wraplength=520).pack(anchor='w',pady=18)
+        def login(event=None):
+            try:
+                session=self.store.login(name.get(),password.get());password.set('');self.finish(session)
+            except Exception as exc:password.set('');self.error(exc)
+        ttk.Button(self.frame,text='Unlock Mutowei Investments',command=login).pack(fill='x',pady=8)
+        ttk.Button(self.frame,text='Forgot password?',command=self.show_recovery).pack(anchor='w',pady=8)
+        self.window.bind('<Return>',login)
+    def job(self,title,work,done,on_error=None):
+        popup=tk.Toplevel(self.window);popup.title(title);popup.transient(self.window);popup.grab_set()
+        ttk.Label(popup,text=title+'…',padding=24).pack();popup.protocol('WM_DELETE_WINDOW',lambda:None)
+        results=queue.Queue()
+        def worker():
+            try:results.put((True,work()))
+            except Exception as exc:results.put((False,str(exc)))
+        threading.Thread(target=worker,daemon=True).start()
+        def poll():
+            if not popup.winfo_exists():return
+            try:ok,result=results.get_nowait()
+            except queue.Empty:self.window.after(150,poll);return
+            popup.destroy()
+            if self.parent:self.window.grab_set()
+            if ok:
+                try:done(result)
+                except Exception as exc:self.error(exc)
+            else:
+                if on_error:on_error(result)
+                self.error(result)
+        self.window.after(150,poll)
+    def show_recovery(self):
+        self.window.unbind('<Return>');self.clear('Recover the owner password')
+        name=self.field('Owner name')
+        ttk.Label(self.frame,text='Recovery method').pack(anchor='w',pady=(8,2))
+        method=tk.StringVar(master=self.window,value='Backup key')
+        ttk.Combobox(self.frame,textvariable=method,state='readonly',values=['Backup key','Security question','Email code']).pack(fill='x')
+        hint=ttk.Label(self.frame,text='Enter your reserved recovery key below.',wraplength=520);hint.pack(anchor='w',pady=8)
+        secret=self.field('Recovery key, answer or email code',True)
+        password=self.field('New password (at least 12 characters)',True);confirm=self.field('Confirm new password',True)
+        def hint_text(*_):
+            row=self.store.owner()
+            if method.get()=='Security question':hint.configure(text=('Question: '+row['question']) if row['question'] else 'No recovery question is configured.')
+            elif method.get()=='Email code':hint.configure(text='Request a code at the registered recovery address. Email must have been verified in Admin security. The email template must include its code.')
+            else:hint.configure(text='Use your reserved MI- recovery key. It will be replaced after a successful reset.')
+        method.trace_add('write',hint_text)
+        def send():
+            try:
+                from ledger import EmailRecovery
+                row=self.store.email_settings(name.get());client=EmailRecovery(row['email_url'],row['email_key'],row['email'])
+                def done(_):
+                    self.email_client=client;self.store.email_sent()
+                    messagebox.showinfo('Recovery email','A code was requested for the registered recovery email. If the email only contains a link, use your backup key and configure the email code template later.',parent=self.window)
+                self.job('Requesting recovery code',client.send,done)
+            except Exception as exc:self.error(exc)
+        ttk.Button(self.frame,text='Send recovery email code',command=send).pack(anchor='w',pady=6)
+        def apply_reset(proof):
+            key=self.store.recover(name.get(),method.get(),proof,password.get());password.set('');confirm.set('');secret.set('');self.email_client=None
+            show_recovery_key(self.window,key,self.show_login)
+        def reset():
+            try:
+                if password.get()!=confirm.get():raise ValueError('Passwords do not match.')
+                self.store.check_rate('recovery');self.store.check_password(password.get())
+                if method.get()=='Email code':
+                    if not self.email_client:raise ValueError('Request a recovery email code first.')
+                    client=self.email_client
+                    def done(uid):apply_reset(self.store.email_proof(uid,client.email))
+                    code=secret.get()
+                    self.job('Verifying recovery code',lambda:client.verify(code),done,lambda error:self.store.failed('recovery',name.get(),'Invalid email recovery code'))
+                else:apply_reset(secret.get())
+            except Exception as exc:self.error(exc)
+        ttk.Button(self.frame,text='Reset password',command=reset).pack(side='right',pady=8)
+        ttk.Button(self.frame,text='Back to login',command=self.show_login).pack(side='left',pady=8)
+    def run(self):
+        if self.parent:self.parent.wait_window(self.window)
+        else:self.window.mainloop()
+        return self.session
+
+
 class App(tk.Tk):
-    def __init__(self):
+    def __init__(self,session):
+        session.store.require(session)
+        self.session=session
+        self.auth=session.store
         self.brand_folder=materialize_brand()
         set_process_identity()
         super().__init__()
@@ -222,12 +360,12 @@ class App(tk.Tk):
         tk.Label(brand,text='WhatKind?',font=('Segoe UI',8,'bold'),bg='#142d32',fg='#88acae').pack(anchor='w')
         self.nav_selected=0
         self.nav_buttons=[]
-        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls','Online backup','Scan records']):
+        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls','Online backup','Scan records','Admin security']):
             button=tk.Button(sidebar,text=label,anchor='w',font=('Segoe UI',11),bg='#142d32',fg='#c9dcdd',activebackground='#23545a',activeforeground='white',relief='flat',borderwidth=0,padx=22,pady=11,cursor='hand2',command=lambda i=index:self.navigate(i))
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
             button.bind('<Enter>',lambda e,b=button:self.animate_nav(b,'#203f47'))
             button.bind('<Leave>',lambda e,b=button,i=index:self.animate_nav(b,'#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.16  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.17  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -306,6 +444,8 @@ class App(tk.Tk):
         self.build_controls()
         self.build_cloud()
         self.build_scanner()
+        self.build_admin()
+        self.protocol('WM_DELETE_WINDOW',self.close_app)
         self.reload_periods()
         self.navigate(0)
         self.install_scrolling()
@@ -543,6 +683,7 @@ class App(tk.Tk):
         self.reload_periods();self.navigate(0)
 
     def offer_legacy(self,force=False):
+        if not self.session.valid():return
         if (DATA/'legacy-assigned.json').exists() or not database_has_records(DATA/'shop.sqlite3'):
             if force:messagebox.showinfo('Earlier records','No unassigned earlier records were found.')
             return
@@ -676,7 +817,8 @@ class App(tk.Tk):
     def navigate(self,index):
         self.nav_selected=index
         self.tabs.select(index)
-        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls','Online backup & restore','Scan & transcribe records'][index])
+        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls','Online backup & restore','Scan & transcribe records','Private admin security'][index])
+        if index==7:self.refresh_admin()
         for i,button in enumerate(self.nav_buttons):
             button.configure(fg='white' if i==index else '#c9dcdd')
             self.animate_nav(button,'#28545b' if i==index else '#142d32')
@@ -694,6 +836,7 @@ class App(tk.Tk):
         return self.periods[self.period.get()]
 
     def form(self,title,fields,save,loader=None,preview=None):
+        self.auth.require(self.session)
         win=tk.Toplevel(self);win.title(title);win.transient(self);win.grab_set();win.configure(bg='#f2f6f6')
         win.resizable(False,False)
         win.geometry(f'+{self.winfo_rootx()+220}+{self.winfo_rooty()+100}')
@@ -702,7 +845,7 @@ class App(tk.Tk):
             ttk.Label(win,text=label).grid(row=i,column=0,sticky='w',padx=16,pady=6)
             v=tk.StringVar(value=default); values[label]=v
             widget=ttk.Combobox(win,textvariable=v,values=choices,state='readonly',width=42) if choices is not None else ttk.Entry(win,textvariable=v,width=45)
-            if 'password' in label.lower():widget.configure(show='•')
+            if 'password' in label.lower() or label.lower()=='answer':widget.configure(show='•')
             widget.grid(row=i,column=1,padx=16,pady=6)
         if loader:
             def load_existing(*_):
@@ -1194,6 +1337,88 @@ class App(tk.Tk):
             messagebox.showinfo('Records imported',f'Saved {count} rows. Cloud upload is separate; choose Online backup when ready.')
         except Exception as exc:messagebox.showerror('Import not saved',str(exc))
 
+    def build_admin(self):
+        frame=self.add_scroll_page('Admin security',padding=16)
+        ttk.Label(frame,text='Owner: '+self.session.name,style='Section.TLabel').pack(anchor='w',pady=(0,8))
+        self.auth_status=ttk.Label(frame,text='',style='Muted.TLabel',wraplength=800);self.auth_status.pack(anchor='w',pady=8)
+        toolbar=ttk.Frame(frame);toolbar.pack(fill='x',pady=8)
+        for index,(label,command) in enumerate([('Lock app',self.lock_app),('Change password',self.change_owner_password),('New reserved key',self.new_owner_key),('Recovery question',self.owner_question),('Verify recovery email',self.owner_email),('Refresh alerts',self.refresh_admin)]):
+            ttk.Button(toolbar,text=label,command=command).grid(row=index//3,column=index%3,sticky='w',padx=(0,8),pady=4)
+        ttk.Label(frame,text='Private alerts: three failed attempts (claimed names, not verified identities)',style='Section.TLabel').pack(anchor='w',pady=(16,8))
+        self.security_alerts=self.register_table(frame,['Time UTC','Name entered','Type','Result'])
+        ttk.Label(frame,text='Recent security activity — private to this local owner account',style='Section.TLabel').pack(anchor='w',pady=(16,8))
+        self.security_activity=self.register_table(frame,['Time UTC','Name entered','Type','Result'])
+        ttk.Label(frame,text='Passwords, recovery answers and reserved keys are hashed. Names in failed attempts are claims entered at the login screen.\\nThese logs and credentials stay outside shop databases and are not uploaded by shop cloud backup.\\nThis app login does not encrypt financial files or protect against someone with access to your Windows account/admin tools.\\nEmail recovery uses a verified Supabase address; its Magic Link template must contain {{ .Token }} to send a code.\\nSecurity questions are optional and easier to guess than a private reserved key. No automatic screen lock is enabled; use Lock app when leaving your PC.',style='Muted.TLabel',wraplength=800).pack(anchor='w',pady=16)
+        self.refresh_admin()
+
+    def refresh_admin(self):
+        if not hasattr(self,'security_alerts'):return
+        self.auth.require(self.session);owner=self.auth.owner()
+        email=owner['email']
+        masked=(email[:2]+'…@'+email.split('@')[-1]) if email else 'not configured'
+        self.auth_status.configure(text='Recovery email: '+masked+'  |  Recovery question: '+('enabled' if owner['answer'] else 'disabled')+'  |  Failed-attempt lockout: 3 attempts / 60 seconds')
+        for tree in (self.security_alerts,self.security_activity):tree.delete(*tree.get_children())
+        for row in self.auth.db.execute('SELECT * FROM attempts ORDER BY id DESC LIMIT 200'):
+            self.security_activity.insert('','end',values=[row['at'],row['name'],row['kind'],row['result']])
+        for row in self.auth.db.execute('SELECT * FROM attempts WHERE alert=1 ORDER BY id DESC LIMIT 200'):
+            self.security_alerts.insert('','end',values=[row['at'],row['name'],row['kind'],row['result']])
+
+    def lock_app(self):
+        if self.grab_current():return
+        self.cloud_disconnect();self.auth.lock()
+        for child in self.winfo_children():
+            if isinstance(child,tk.Toplevel):child.destroy()
+        self.withdraw()
+        session=OwnerGate(self.auth,parent=self).run()
+        if not session:self.close_app();return
+        self.session=session;self.deiconify();self.refresh_admin()
+        # Remap binds scrolling tags; show only after authentication succeeds.
+        self.navigate(7)
+
+    def close_app(self):
+        self.auth.lock()
+        try:self.ledger.db.close()
+        finally:self.destroy()
+
+    def change_owner_password(self):
+        def save(v):
+            if v['New password']!=v['Confirm password']:raise ValueError('Passwords do not match.')
+            self.auth.change_password(self.session,v['Current password'],v['New password']);self.refresh_admin()
+            messagebox.showinfo('Password changed','Use your new password at the next login. Your reserved recovery key is unchanged.')
+        self.form('Change owner password',[(label,'',None) for label in ['Current password','New password','Confirm password']],save)
+
+    def new_owner_key(self):
+        def save(v):
+            key=self.auth.rotate_key(self.session,v['Current password']);self.refresh_admin();show_recovery_key(self,key)
+        self.form('Replace reserved key',[('Current password','',None)],save,preview=lambda v:'A new key invalidates the previous one. Save it somewhere private, outside the app.')
+
+    def owner_question(self):
+        def save(v):
+            self.auth.set_question(self.session,v['Current password'],v['Question'],v['Answer']);self.refresh_admin()
+        self.form('Optional recovery question',[('Current password','',None),('Question',self.auth.owner()['question'] or '',None),('Answer','',None)],save,preview=lambda v:'Use a non-obvious answer of at least 8 characters. Leave question and answer blank to disable this recovery route.')
+
+    def owner_email(self):
+        import json
+        try:config=json.loads((DATA/'cloud-settings.json').read_text())
+        except (OSError,ValueError):config={}
+        def send(v):
+            from ledger import EmailRecovery
+            self.auth.require(self.session);self.auth.check_rate('admin')
+            if not self.auth.matches(v['Current password'],self.auth.owner()['password']):
+                self.auth.failed('admin',self.session.name);raise ValueError('Current password is incorrect.')
+            client=EmailRecovery(v['Project URL'],v['Publishable / anon key'],v['Email'])
+            password=v['Current password']
+            def sent(_):
+                def verify(values):
+                    code=values['Email code']
+                    def done(uid):
+                        self.auth.bind_email(self.session,password,client.client.url,client.client.key,client.email,uid);self.refresh_admin()
+                        messagebox.showinfo('Recovery email verified','This address can now recover the local owner password. Your Supabase password was not changed.')
+                    self.after(100,lambda:self.cloud_job('Verifying recovery email',lambda:client.verify(code),done))
+                self.form('Verify email code',[('Email code','',None)],verify,preview=lambda values:'Enter the code from the email. If only a link arrives, configure the Supabase email template to include {{ .Token }}. No template is changed automatically.')
+            self.after(100,lambda:self.cloud_job('Sending verification code',client.send,sent))
+        self.form('Set verified recovery email',[('Current password','',None),('Project URL',config.get('url',''),None),('Publishable / anon key',config.get('key',''),None),('Email',self.auth.owner()['email'] or config.get('email',''),None)],send)
+
     def check_update(self):
         self.update_button.configure(state='disabled',text='Checking…')
         results=queue.Queue()
@@ -1230,5 +1455,14 @@ class App(tk.Tk):
             except Exception as e:messagebox.showerror('Backup failed',str(e))
 
 
+def run_application():
+    from ledger import AuthStore
+    store=AuthStore(DATA/'security'/'owner.sqlite3')
+    try:
+        session=OwnerGate(store).run()
+        if session:App(session).mainloop()
+    finally:store.db.close()
+
+
 if __name__=='__main__':
-    App().mainloop()
+    run_application()

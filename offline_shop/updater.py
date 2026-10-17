@@ -71,6 +71,12 @@ def run_update(root,sha,backup):
         if not source_path.exists():continue
         target_path=backup if source_path.parent==backup.parent else backup.with_name(backup.stem+'-'+source_path.parent.name+'.sqlite3')
         with sqlite3.connect(source_path) as source,sqlite3.connect(target_path) as target:source.backup(target)
+    private=backup.parent/'security'/'owner.sqlite3'
+    if private.exists():
+        private_backup=private.parent/('before-update-security-'+backup.stem+'.sqlite3')
+        with sqlite3.connect(private) as source,sqlite3.connect(private_backup) as target:source.backup(target)
+        try:os.chmod(private_backup,0o600)
+        except OSError:pass
     with tempfile.TemporaryDirectory(prefix='.shop-update-',dir=root) as temp:
         stage=Path(temp)
         stage_update(stage,sha)

@@ -584,3 +584,187 @@ COST_METHODS=['Weighted average','FIFO']
 
 def validate_cost_method(method):
     if method not in COST_METHODS:raise ValueError('Choose FIFO or Weighted average.')
+
+
+class AuthSession:
+    def __init__(self,store,token,name):self.store=store;self.token=token;self.name=name
+    def valid(self):
+        import hmac
+        return bool(self.store.active_token) and hmac.compare_digest(self.token,self.store.active_token)
+
+
+class AuthStore:
+    """Local owner gate. Hashes credentials; does not encrypt shop databases."""
+    ROUNDS=600000
+    LOCK_SECONDS=60
+    def __init__(self,path):
+        from pathlib import Path
+        import os
+        self.path=Path(path);self.path.parent.mkdir(parents=True,exist_ok=True)
+        self.db=sqlite3.connect(self.path);self.db.row_factory=sqlite3.Row
+        self.active_token=None;self._email_proof=None
+        self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS owner(id INTEGER PRIMARY KEY CHECK(id=1),name TEXT NOT NULL,password TEXT NOT NULL,recovery TEXT NOT NULL,question TEXT,answer TEXT,email TEXT,email_uid TEXT,email_url TEXT,email_key TEXT);
+        CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY,at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')),name TEXT,kind TEXT,result TEXT,alert INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS throttle(kind TEXT,subject TEXT,failures INTEGER,started REAL,locked REAL,PRIMARY KEY(kind,subject));
+        ''')
+        try:
+            os.chmod(self.path.parent,0o700);os.chmod(self.path,0o600)
+        except OSError:pass
+    @staticmethod
+    def normalized(value):return ' '.join(str(value).strip().casefold().split())
+    @staticmethod
+    def safe_name(value):return ''.join(c for c in str(value) if c.isprintable()).strip()[:80] or '(blank)'
+    @staticmethod
+    def check_password(value):
+        if not 12<=len(value)<=256 or not value.strip():raise ValueError('Choose a password or passphrase of 12–256 characters.')
+    @staticmethod
+    def new_key():
+        import secrets
+        raw=secrets.token_hex(16).upper()
+        return 'MI-'+'-'.join(raw[i:i+4] for i in range(0,len(raw),4))
+    @staticmethod
+    def key_value(value):return ''.join(c for c in str(value).upper() if c.isalnum())
+    @classmethod
+    def hash_secret(cls,secret):
+        import hashlib,secrets,json
+        salt=secrets.token_bytes(16)
+        return json.dumps({'salt':salt.hex(),'rounds':cls.ROUNDS,'hash':hashlib.pbkdf2_hmac('sha256',secret.encode(),salt,cls.ROUNDS).hex()})
+    @staticmethod
+    def matches(secret,stored):
+        import hashlib,hmac,json
+        try:
+            data=json.loads(stored);rounds=int(data['rounds'])
+            if not 100000<=rounds<=1000000:return False
+            result=hashlib.pbkdf2_hmac('sha256',secret.encode(),bytes.fromhex(data['salt']),rounds).hex()
+            return hmac.compare_digest(result,data['hash'])
+        except (ValueError,KeyError,TypeError):return False
+    def owner(self):return self.db.execute('SELECT * FROM owner WHERE id=1').fetchone()
+    def setup(self,name,password,question='',answer=''):
+        if self.owner():raise ValueError('The owner account is already configured.')
+        raw=str(name).strip();name=self.safe_name(name)
+        if name=='(blank)':raise ValueError('Enter the owner name.')
+        if name!=raw or len(raw)>80:raise ValueError('Use an owner name of at most 80 printable characters.')
+        self.check_password(password)
+        if bool(question.strip())!=bool(answer.strip()):raise ValueError('Enter both a question and an answer, or leave both blank.')
+        if answer.strip() and len(self.normalized(answer))<8:raise ValueError('Use a recovery answer of at least 8 characters that other people cannot guess.')
+        key=self.new_key()
+        with self.db:
+            self.db.execute('INSERT INTO owner(id,name,password,recovery,question,answer) VALUES (1,?,?,?,?,?)',(name,self.hash_secret(password),self.hash_secret(self.key_value(key)),question.strip()[:300],self.hash_secret(self.normalized(answer)) if answer.strip() else None))
+            self.db.execute("INSERT INTO attempts(name,kind,result) VALUES (?,'setup','Owner account created')",(name,))
+        return key
+    def remaining(self,kind):
+        import time
+        row=self.db.execute("SELECT locked FROM throttle WHERE kind=? AND subject='*'",(kind,)).fetchone()
+        return max(0,int(row['locked']-time.time()+.999)) if row else 0
+    def check_rate(self,kind):
+        wait=self.remaining(kind)
+        if wait:raise ValueError(f'Temporarily locked. Try again in {wait} seconds.')
+    def failed(self,kind,name,result='Incorrect credentials'):
+        import time
+        now=time.time();name=self.safe_name(name);counts=[]
+        with self.db:
+            for subject in ('*','name:'+self.normalized(name)):
+                old=self.db.execute('SELECT * FROM throttle WHERE kind=? AND subject=?',(kind,subject)).fetchone()
+                count=old['failures'] if old and now-old['started']<900 and not (old['locked'] and old['locked']<=now) else 0
+                count+=1;locked=now+self.LOCK_SECONDS if count>=3 else 0
+                started=old['started'] if old and count>1 else now
+                self.db.execute('INSERT INTO throttle VALUES (?,?,?,?,?) ON CONFLICT(kind,subject) DO UPDATE SET failures=excluded.failures,started=excluded.started,locked=excluded.locked',(kind,subject,count,started,locked));counts.append(count)
+            self.db.execute('INSERT INTO attempts(name,kind,result,alert) VALUES (?,?,?,?)',(name,kind,result,1 if max(counts)>=3 else 0))
+        return max(counts)>=3
+    def login(self,name,password):
+        import secrets
+        self.check_rate('login');row=self.owner()
+        if not row:raise ValueError('Create the owner account first.')
+        valid=self.matches(password,row['password'])
+        if not valid or self.normalized(name)!=self.normalized(row['name']):
+            alerted=self.failed('login',name)
+            raise ValueError('Name or password is incorrect.'+(' Three attempts failed; login is locked for 60 seconds.' if alerted else ''))
+        self.active_token=secrets.token_urlsafe(32)
+        with self.db:
+            self.db.execute("DELETE FROM throttle WHERE kind='login'")
+            self.db.execute("INSERT INTO attempts(name,kind,result) VALUES (?,'login','Successful owner login')",(row['name'],))
+        return AuthSession(self,self.active_token,row['name'])
+    def require(self,session):
+        if not session or session.store is not self or not session.valid():raise PermissionError('Owner login required.')
+    def lock(self):self.active_token=None;self._email_proof=None
+    def change_password(self,session,current,new):
+        self.require(session);self.check_rate('admin');self.check_password(new)
+        if not self.matches(current,self.owner()['password']):
+            self.check_rate('admin');self.failed('admin',session.name);raise ValueError('Current password is incorrect.')
+        with self.db:
+            self.db.execute('UPDATE owner SET password=? WHERE id=1',(self.hash_secret(new),))
+            self.db.execute("INSERT INTO attempts(name,kind,result) VALUES (?,'admin','Password changed')",(session.name,))
+    def rotate_key(self,session,password):
+        self.require(session);self.check_rate('admin')
+        if not self.matches(password,self.owner()['password']):self.failed('admin',session.name);raise ValueError('Current password is incorrect.')
+        key=self.new_key()
+        with self.db:
+            self.db.execute('UPDATE owner SET recovery=? WHERE id=1',(self.hash_secret(self.key_value(key)),))
+            self.db.execute("INSERT INTO attempts(name,kind,result) VALUES (?,'admin','Recovery key rotated')",(session.name,))
+        return key
+    def bind_email(self,session,password,url,key,email,uid):
+        self.require(session);self.check_rate('admin')
+        if not self.matches(password,self.owner()['password']):self.failed('admin',session.name);raise ValueError('Current password is incorrect.')
+        with self.db:
+            self.db.execute('UPDATE owner SET email=?,email_uid=?,email_url=?,email_key=? WHERE id=1',(email.strip().casefold(),uid,url,key))
+            self.db.execute("INSERT INTO attempts(name,kind,result) VALUES (?,'admin','Recovery email verified')",(session.name,))
+    def email_proof(self,uid,email):
+        import secrets
+        row=self.owner()
+        if not row or row['email_uid']!=uid or row['email']!=email.strip().casefold():raise ValueError('Recovery email verification did not match the owner.')
+        import time
+        token=secrets.token_urlsafe(32);self._email_proof=(token,time.time()+120);return token
+    def recover(self,name,method,secret,new_password):
+        import hmac
+        self.check_rate('recovery');self.check_password(new_password);row=self.owner()
+        valid=False
+        if row and self.normalized(name)==self.normalized(row['name']):
+            if method=='Backup key':valid=self.matches(self.key_value(secret),row['recovery'])
+            elif method=='Security question' and row['answer']:valid=self.matches(self.normalized(secret),row['answer'])
+            elif method=='Email code':
+                import time
+                valid=bool(self._email_proof) and time.time()<self._email_proof[1] and hmac.compare_digest(secret,self._email_proof[0])
+        self._email_proof=None
+        if not valid:
+            alerted=self.failed('recovery',name,'Failed password recovery')
+            raise ValueError('Recovery details are incorrect.'+(' Recovery is locked for 60 seconds.' if alerted else ''))
+        key=self.new_key()
+        with self.db:
+            self.db.execute('UPDATE owner SET password=?,recovery=? WHERE id=1',(self.hash_secret(new_password),self.hash_secret(self.key_value(key))))
+            self.db.execute('DELETE FROM throttle')
+            self.db.execute("INSERT INTO attempts(name,kind,result) VALUES (?,'recovery','Password recovered; backup key rotated')",(row['name'],))
+        self.lock();return key
+
+
+    def set_question(self,session,password,question,answer):
+        self.require(session);self.check_rate('admin')
+        if not self.matches(password,self.owner()['password']):self.failed('admin',session.name);raise ValueError('Current password is incorrect.')
+        if bool(question.strip())!=bool(answer.strip()):raise ValueError('Provide both question and answer, or leave both blank to disable it.')
+        if answer.strip() and len(self.normalized(answer))<8:raise ValueError('Use an answer of at least 8 characters.')
+        with self.db:
+            self.db.execute('UPDATE owner SET question=?,answer=? WHERE id=1',(question.strip()[:300],self.hash_secret(self.normalized(answer)) if answer.strip() else None))
+            self.db.execute("INSERT INTO attempts(name,kind,result) VALUES (?,'admin','Recovery question updated')",(session.name,))
+
+    def email_settings(self,name):
+        self.check_rate('email');row=self.owner()
+        if not row or self.normalized(name)!=self.normalized(row['name']) or not row['email']:
+            self.failed('email',name,'Email recovery unavailable or owner name did not match')
+            raise ValueError('Email recovery is unavailable for those details. Use your backup key or configured question.')
+        return dict(row)
+
+    def email_sent(self):
+        import time
+        now=time.time()
+        with self.db:self.db.execute("INSERT INTO throttle VALUES ('email','*',0,?,?) ON CONFLICT(kind,subject) DO UPDATE SET failures=0,started=excluded.started,locked=excluded.locked",(now,now+60))
+
+
+class EmailRecovery:
+    """Supabase OTP proves ownership without changing the Supabase password."""
+    def __init__(self,url,key,email):self.client=Cloud(url,key);self.email=email.strip().casefold()
+    def send(self):self.client.request('/auth/v1/otp',{'email':self.email,'create_user':False})
+    def verify(self,code):
+        result=self.client.request('/auth/v1/verify',{'email':self.email,'token':code.strip(),'type':'email'})
+        user=result.get('user',{})
+        if user.get('email','').casefold()!=self.email or not user.get('id'):raise ValueError('Email verification did not match.')
+        return user['id']
