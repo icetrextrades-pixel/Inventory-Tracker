@@ -1,4 +1,4 @@
-# Family Shop v0.3 — offline desktop edition
+# Family Shop v0.4 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -42,7 +42,7 @@ The historical check is $774.65 stock-implied sales less $531 cash, $49.15 EcoCa
 
 This is a stock-count and period reconciliation tool, not yet a full double-entry accounting package. Profit is provisional and assumes complete counts, accurate costs and one selling price per product per period. Missing costs entered as zero overstate profit. Use shorter periods when selling prices change. Count all products, including those with no receipts; the app can only flag missing counts for products with recorded receipts. Opening stock can be brought forward from the latest earlier period, then actual closing counts must be updated.
 
-Received orders are recorded; supplier balances, transaction-level sales, returns, taxes, multiple currencies, passwords/roles, encryption, an EXE installer are future work. Records are local to one computer and are not synced across devices. The computer's account/file permissions protect the unencrypted database. The entry register currently shows product IDs and monetary cents; exported financial reports show currency amounts.
+Received orders are recorded; supplier balances, transaction-level sales, returns, taxes, multiple currencies, passwords/roles, encryption, an EXE installer are future work. Records are local to one computer and are not synced across devices. The computer's account/file permissions protect the unencrypted database. The entry register shows product names and monetary amounts in dollars.
 
 ## Backups and recovery
 
@@ -79,3 +79,16 @@ The updater follows this repository's `family-shop-offline` branch. Only run upd
 The app closes during installation and reopens afterward. Your database is stored separately and is never overwritten by the downloaded code files. The first update check after the manual setup may reinstall the current version once to establish the installed commit marker. Later checks identify an already installed version. The updater does not install Python or new third-party dependencies. Future versions requiring such changes will need separate instructions.
 
 Verification: all 11 tests pass, including download pinning/hash validation, update rollback and preserving database bytes. Windows shortcut creation and the live download/restart flow require validation on your PC.
+
+
+## v0.4 — readable registers and printable reports
+
+Click **Update App** in your installed app; no ZIP download is needed. This update stays compatible with the v0.3 updater and adds no dependencies.
+
+- Goods received and daily money now use scrollable tables with product names and dollar amounts instead of raw database rows.
+- Orders & customer credit shows a customer summary of total credit sales, repayments and outstanding balances, across all recorded dates.
+- **Print / Save PDF** on the stock/income tab opens an offline HTML report in your default browser. Click its Print / Save as PDF button, then choose your printer or Save as PDF. The report contains the selected period's stock sheet, reconciliation and income statement, all-time customer balances, explanatory notes and signature spaces. Suggested paper layout is A4 landscape. Printing uses your browser; the app does not create a PDF directly.
+- Report checks flag opening stock with zero cost, receipts with zero goods cost, no stock counts, and differences between customer credit sales and daily-money credit. Credit differences are informational: repayments within a period can explain them, and nothing is adjusted automatically.
+- Generated reports remain in the data folder's `reports` subfolder. They contain business information; remove old reports manually when no longer needed.
+
+Validation: 13 tests pass. The Windows tables and browser print layout still require checking on your PC.

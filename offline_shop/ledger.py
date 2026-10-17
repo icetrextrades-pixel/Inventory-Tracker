@@ -160,3 +160,24 @@ class Ledger:
                 unit_cost=int(avg.quantize(Decimal('1'),rounding=ROUND_HALF_UP))
                 self.db.execute('INSERT INTO stock(period,product,opening,closing,drawings,broken,opening_cost,price) VALUES (?,?,?,?,0,0,?,?)',(period,s['product'],s['closing'],s['closing'],unit_cost,s['price']))
         return previous['start'],previous['end']
+
+    def customer_balances(self):
+        return self.db.execute('''SELECT c.name,
+            COALESCE((SELECT SUM(amount) FROM debts WHERE customer=c.id),0) credit,
+            COALESCE((SELECT SUM(r.amount) FROM repayments r JOIN debts d ON d.id=r.debt WHERE d.customer=c.id),0) paid
+            FROM customers c ORDER BY c.name''').fetchall()
+
+    def checks(self,period):
+        warnings=[]
+        for r in self.db.execute('SELECT p.name,s.opening,s.opening_cost FROM stock s JOIN products p ON p.id=s.product WHERE period=?',(period,)):
+            if r['opening'] and not r['opening_cost']:
+                warnings.append(f"Missing opening cost: {r['name']}. Profit may be overstated.")
+        for r in self.db.execute('SELECT p.name,r.reference FROM receipts r JOIN products p ON p.id=r.product WHERE period=? AND r.goods=0',(period,)):
+            warnings.append(f"Zero purchase cost: {r['name']} ({r['reference']}). Confirm whether goods were free.")
+        credit=self.db.execute('SELECT COALESCE(SUM(credit),0) FROM cash WHERE period=?',(period,)).fetchone()[0]
+        debts=self.db.execute('SELECT COALESCE(SUM(amount),0) FROM debts WHERE period=?',(period,)).fetchone()[0]
+        if credit!=debts:
+            warnings.append(f'Credit register differs from daily credit: customer sales ${debts/100:.2f}; daily credit ${credit/100:.2f}. Difference ${(debts-credit)/100:.2f}. Check entries and same-period repayments; no automatic adjustment made.')
+        if not self.db.execute('SELECT 1 FROM stock WHERE period=?',(period,)).fetchone():
+            warnings.append('No stock counts entered for this period.')
+        return warnings

@@ -15,13 +15,35 @@ DATA = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'FamilyShop'
 DATA.mkdir(parents=True, exist_ok=True)
 
 
+"""Offline printable HTML. All user text is escaped before rendering."""
+from html import escape
+
+COLUMNS=['Details','Unit','Opening','Receivings','Total stock','Closing','Drawings','Broken','Sold','Unit price','Total amount']
+
+
+def table(headers,rows):
+    def cell(value):return escape(str(value))
+    return '<table><thead><tr>'+''.join('<th>'+cell(v)+'</th>' for v in headers)+'</tr></thead><tbody>'+''.join('<tr>'+''.join('<td>'+cell(v)+'</td>' for v in row)+'</tr>' for row in rows)+'</tbody></table>'
+
+
+def printable(ledger,period):
+    rows,totals=ledger.report(period)
+    dates=ledger.db.execute('SELECT start,end FROM periods WHERE id=?',(period,)).fetchone()
+    if not dates:raise ValueError('Reporting period not found.')
+    warnings=ledger.checks(period)
+    balances=[[r['name'],f"{r['credit']/100:.2f}",f"{r['paid']/100:.2f}",f"{(r['credit']-r['paid'])/100:.2f}"] for r in ledger.customer_balances()]
+    return '''<!doctype html><html><head><meta charset="utf-8"><title>Family Shop — stock and income report</title>
+<style>body{font:14px Arial,sans-serif;color:#172b35;max-width:1300px;margin:30px auto;padding:0 18px}h1{color:#17685b}h2{margin-top:30px}table{border-collapse:collapse;width:100%;margin:15px 0}th,td{border:1px solid #cbd5da;padding:8px;text-align:right}th{background:#eaf4f0}td:first-child,th:first-child{text-align:left}.note{padding:12px;background:#fff4da}.sign{margin-top:40px;line-height:3}button{padding:10px 20px;cursor:pointer}@media print{button{display:none}body{font-size:10px;margin:0;max-width:none}th,td{padding:5px}thead{display:table-header-group}tr{break-inside:avoid}.sign{break-inside:avoid}@page{size:A4 landscape;margin:12mm}}</style></head><body>
+<button onclick="window.print()">Print / Save as PDF</button><h1>FAMILY SHOP</h1>''' + f'<p>Stock and income report | {escape(dates[0])} to {escape(dates[1])} | USD</p>' + '<p class="note">Provisional report based on complete stock counts and supplied costs. Stock-implied sales may include unexplained losses; investigate the reconciliation difference. Customer balances below cover all recorded dates, not only this period.</p>'+ ('<h2>Checks requiring attention</h2><ul>'+''.join('<li>'+escape(w)+'</li>' for w in warnings)+'</ul>' if warnings else '')+'<h2>Stock sheet</h2>'+table(COLUMNS,rows)+'<h2>Reconciliation and income statement</h2>'+table(['Details','Amount USD'],totals.items())+'<p>Cost of goods sold uses periodic weighted-average cost, including allocated delivery costs. Drawings are excluded from sales and expenses. Unexplained cash differences are not automatically deducted from profit.</p><h2>Customer balances — all recorded dates</h2>'+table(['Customer','Credit sales USD','Repaid USD','Balance USD'],balances)+'<div class="sign">Prepared by: __________________________ &nbsp; Signature: __________________________<br>Checked by: __________________________ &nbsp; Signature: __________________________<br>Date: __________________________</div></body></html>'
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('Family Shop | Offline stock & accounts')
         self.geometry('1180x760')
         self.ledger = Ledger(DATA / 'shop.sqlite3')
-        ttk.Label(self, text='FAMILY SHOP  •  v0.3', font=('Segoe UI', 24, 'bold')).pack(anchor='w', padx=24, pady=(20,4))
+        ttk.Label(self, text='FAMILY SHOP  •  v0.4', font=('Segoe UI', 24, 'bold')).pack(anchor='w', padx=24, pady=(20,4))
         ttk.Label(self, text='Stock • Receivings • Cash balance • Income statement | All records stay on this computer').pack(anchor='w',padx=24)
         bar=ttk.Frame(self); bar.pack(fill='x',padx=24,pady=14)
         ttk.Label(bar,text='Reporting period:').pack(side='left')
@@ -44,6 +66,7 @@ class App(tk.Tk):
         report=ttk.Frame(self.tabs); self.tabs.add(report,text='Stock sheet & income statement')
         top=ttk.Frame(report);top.pack(fill='x',pady=8)
         ttk.Button(top,text='Refresh report',command=self.refresh).pack(side='left')
+        ttk.Button(top,text='Print / Save PDF',command=self.print_report).pack(side='right')
         ttk.Button(top,text='Export stock CSV',command=lambda:self.export('stock')).pack(side='left',padx=8)
         ttk.Button(top,text='Export statement CSV',command=lambda:self.export('statement')).pack(side='left')
         self.columns=['Details','Unit','Opening','Receivings','Total stock','Closing','Drawings','Broken','Sold','Unit price','Total amount']
@@ -55,7 +78,10 @@ class App(tk.Tk):
         self.tree.pack(fill='both',expand=True);scroll.pack(fill='x')
         self.summary=tk.Text(report,height=15,font=('Consolas',11),state='disabled');self.summary.pack(fill='both',expand=True,pady=8)
         self.log=ttk.Frame(self.tabs); self.tabs.add(self.log,text='Received orders & daily money')
-        self.logtext=tk.Text(self.log,wrap='none',font=('Consolas',10));self.logtext.pack(fill='both',expand=True)
+        ttk.Label(self.log,text='Goods received — selected period').pack(anchor='w',pady=6)
+        self.receipt_table=self.register_table(self.log,['Date','Product','Supplier','Invoice','Units','Goods USD','Delivery USD'])
+        ttk.Label(self.log,text='Daily money — selected period').pack(anchor='w',pady=6)
+        self.cash_table=self.register_table(self.log,['Date','Cash USD','EcoCash USD','Credit USD','Paid out USD','Expenses USD','Notes'])
         ttk.Label(self,text=f'Data: {DATA} | Back up regularly. No cloud sync or internet connection required.').pack(anchor='w',padx=24,pady=8)
         self.build_operations()
         self.reload_periods()
@@ -124,13 +150,10 @@ class App(tk.Tk):
             for row in rows:self.tree.insert('','end',values=row)
             text='\n'.join(f'{k:<48} $ {v:>12}' for k,v in totals.items())
             text+='\n\nProfit uses periodic weighted-average cost, including delivery. Drawings are excluded from sales.\nStock-implied profit is provisional: investigate the cash difference; it is not automatically an expense.\nPrepared by: __________________  Checked by: __________________  Signature: __________________'
-            self.logtext.delete('1.0','end')
-            for table in ['receipts','cash']:
-                self.logtext.insert('end',table.upper()+'\n')
-                for r in self.ledger.db.execute(f'SELECT * FROM {table} WHERE period=? ORDER BY day,id',(p,)):
-                    self.logtext.insert('end',str(dict(r))+'\n')
-                self.logtext.insert('end','\nAmounts in this register are stored as cents. Product IDs refer to the product list.\n\n')
+            warnings=self.ledger.checks(p)
+            if warnings:text+='\n\nCHECKS REQUIRING ATTENTION\n'+'\n'.join(warnings)
         except ValueError as e:text=str(e)
+        self.refresh_registers()
         self.refresh_operations()
         self.summary.configure(state='normal');self.summary.delete('1.0','end');self.summary.insert('end',text);self.summary.configure(state='disabled')
 
@@ -162,7 +185,9 @@ class App(tk.Tk):
         for label,command in [('Create purchase order',self.new_order),('Receive order / partial delivery',self.deliver),('Record customer credit sale',self.new_debt),('Record debt repayment',self.repayment),('Bring forward previous closing stock',self.carry)]:
             ttk.Button(frame,text=label,command=command).pack(anchor='w',pady=4)
         ttk.Label(frame,text='Customer credit is a separate supporting register: enter the period’s unpaid sales in Daily money too.\nRepayments reduce customer debt only; exclude old debt collections from daily sales cash/EcoCash.\nCarry-forward starts closing quantities equal to opening: update actual closing counts before reporting.',wraplength=950).pack(anchor='w',pady=12)
-        self.operations=tk.Text(frame,font=('Consolas',10),wrap='none');self.operations.pack(expand=True,fill='both')
+        self.operations=tk.Text(frame,height=9,font=('Consolas',10),wrap='none');self.operations.pack(expand=True,fill='both')
+        ttk.Label(frame,text='Customer balances — all recorded dates').pack(anchor='w',pady=6)
+        self.customer_table=self.register_table(frame,['Customer','Credit sales USD','Repaid USD','Balance USD'])
 
     def refresh_operations(self):
         if not hasattr(self,'operations'):return
@@ -183,6 +208,9 @@ class App(tk.Tk):
         for r in db.execute('SELECT * FROM repayments ORDER BY day,id'):
             text+=f"{r['day']} | debt #{r['debt']} | {r['method']} | ${r['amount']/100:.2f}\n"
         self.operations.delete('1.0','end');self.operations.insert('end',text)
+        self.customer_table.delete(*self.customer_table.get_children())
+        for r in self.ledger.customer_balances():
+            self.customer_table.insert('','end',values=[r['name'],f"{r['credit']/100:.2f}",f"{r['paid']/100:.2f}",f"{(r['credit']-r['paid'])/100:.2f}"])
 
     def new_order(self):
         self.product_form('Purchase order',[('Supplier',''),('Order reference',''),('Order date',date.today().isoformat()),('Units ordered','1'),('Estimated total cost','0')],lambda p,i,v:self.ledger.order(i,*v))
@@ -210,6 +238,39 @@ class App(tk.Tk):
             start,end=self.ledger.carry_forward(p);self.refresh()
             messagebox.showinfo('Stock brought forward',f'Copied closing stock from {start} to {end}. Update actual closing quantities before reporting.')
         except Exception as e:messagebox.showerror('Please check',str(e))
+
+    def register_table(self,parent,columns):
+        box=ttk.Frame(parent);box.pack(expand=True,fill='both')
+        tree=ttk.Treeview(box,columns=columns,show='headings',height=6)
+        for col in columns:
+            tree.heading(col,text=col);tree.column(col,width=140,minwidth=80)
+        vertical=ttk.Scrollbar(box,orient='vertical',command=tree.yview)
+        horizontal=ttk.Scrollbar(box,orient='horizontal',command=tree.xview)
+        tree.configure(yscrollcommand=vertical.set,xscrollcommand=horizontal.set)
+        tree.grid(row=0,column=0,sticky='nsew');vertical.grid(row=0,column=1,sticky='ns');horizontal.grid(row=1,column=0,sticky='ew')
+        box.rowconfigure(0,weight=1);box.columnconfigure(0,weight=1)
+        return tree
+
+    def refresh_registers(self):
+        for tree in (self.receipt_table,self.cash_table):tree.delete(*tree.get_children())
+        try:p=self.pid()
+        except ValueError:return
+        for r in self.ledger.db.execute('SELECT r.*,p.name FROM receipts r JOIN products p ON p.id=r.product WHERE period=? ORDER BY day,r.id',(p,)):
+            self.receipt_table.insert('','end',values=[r['day'],r['name'],r['supplier'],r['reference'],r['units'],f"{r['goods']/100:.2f}",f"{r['freight']/100:.2f}"])
+        for r in self.ledger.db.execute('SELECT * FROM cash WHERE period=? ORDER BY day',(p,)):
+            self.cash_table.insert('','end',values=[r['day']]+[f"{r[k]/100:.2f}" for k in ['cash','ecocash','credit','cashout','expense']]+[r['note']])
+
+    def print_report(self):
+        try:
+            import tempfile
+            import webbrowser
+            html=printable(self.ledger,self.pid())
+            folder=DATA/'reports';folder.mkdir(exist_ok=True)
+            with tempfile.NamedTemporaryFile(mode='w',suffix='.html',prefix='shop-report-',dir=folder,encoding='utf-8',delete=False) as output:
+                output.write(html);path=Path(output.name)
+            if not webbrowser.open(path.as_uri()):
+                messagebox.showinfo('Report saved',f'Open this report in your browser to print or save PDF:\n{path}')
+        except Exception as exc:messagebox.showerror('Report could not be prepared',str(exc))
 
     def check_update(self):
         self.update_button.configure(state='disabled',text='Checking…')
