@@ -101,6 +101,23 @@ def set_shortcut_identity(path):
         ole.CoUninitialize()
 
 
+def scroll_target(widget,axis,motion,parents):
+    """Route to the nearest viewport that can move, then its enclosing page."""
+    seen=set()
+    while widget is not None:
+        target=parents.get(widget,widget)
+        if target not in seen:
+            seen.add(target)
+            view=getattr(target,axis+'view',None)
+            if view:
+                try:
+                    first,last=map(float,view())
+                    if (motion<0 and first>0.000001) or (motion>0 and last<0.999999):return target
+                except (tk.TclError,TypeError,ValueError):pass
+        widget=getattr(widget,'master',None)
+    return None
+
+
 class App(tk.Tk):
     def __init__(self):
         self.brand_folder=materialize_brand()
@@ -112,6 +129,7 @@ class App(tk.Tk):
         self.title('Family Shop — Stock & Accounts')
         self.geometry('1280x850')
         self.minsize(1060,720)
+        self._scroll_parents={}
         self.apply_theme()
         self.ledger = Ledger(DATA / 'shop.sqlite3')
         sidebar=tk.Frame(self,bg='#142d32',width=216)
@@ -128,7 +146,7 @@ class App(tk.Tk):
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
             button.bind('<Enter>',lambda e,b=button:b.configure(bg='#203f47'))
             button.bind('<Leave>',lambda e,b=button,i=index:b.configure(bg='#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.9  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.10  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -167,7 +185,7 @@ class App(tk.Tk):
             ttk.Button(card,text=button,command=command,style='Accent.TButton').pack(anchor='w')
         ttk.Label(actions,text='Keep your numbers reliable',style='Section.TLabel').pack(anchor='w',pady=(10,8))
         ttk.Label(actions,text='Count individual units and include purchase costs. Profit stays provisional until stock and money agree.\nKeep old debt collections separate from new sales. Back up your records regularly.',style='Muted.TLabel',wraplength=780).pack(anchor='w')
-        report=ttk.Frame(self.tabs); self.tabs.add(report,text='Stock sheet & income statement')
+        report=self.add_scroll_page('Stock sheet & income statement')
         top=ttk.Frame(report);top.pack(fill='x',pady=8)
         ttk.Button(top,text='Refresh report',command=self.refresh).pack(side='left')
         ttk.Button(top,text='Print / Save PDF',command=self.print_report).pack(side='right')
@@ -181,7 +199,7 @@ class App(tk.Tk):
         scroll=ttk.Scrollbar(report,orient='horizontal',command=self.tree.xview);self.tree.configure(xscrollcommand=scroll.set)
         self.tree.pack(fill='both',expand=True);scroll.pack(fill='x')
         self.summary=tk.Text(report,height=12,font=('Consolas',10),state='disabled',bg='#ffffff',fg='#244047',relief='flat',padx=16,pady=14,highlightthickness=1,highlightbackground='#dde6e6');self.summary.pack(fill='both',expand=True,pady=8)
-        self.log=ttk.Frame(self.tabs); self.tabs.add(self.log,text='Received orders & daily money')
+        self.log=self.add_scroll_page('Received orders & daily money')
         ttk.Label(self.log,text='Goods received — selected period').pack(anchor='w',pady=6)
         self.receipt_table=self.register_table(self.log,['Date','Product','Supplier','Invoice','Units','Goods USD','Delivery USD'])
         ttk.Label(self.log,text='Daily money — selected period').pack(anchor='w',pady=6)
@@ -193,24 +211,107 @@ class App(tk.Tk):
         self.build_scanner()
         self.reload_periods()
         self.navigate(0)
+        self.install_scrolling()
         self.after(600,lambda:self.desktop_shortcut(existing_only=True))
 
-    def overview_page(self):
-        self.overview_shell=ttk.Frame(self.tabs)
-        canvas=tk.Canvas(self.overview_shell,bg='#f2f6f6',highlightthickness=0)
-        scroll=ttk.Scrollbar(self.overview_shell,orient='vertical',command=canvas.yview)
-        canvas.configure(yscrollcommand=scroll.set)
-        scroll.pack(side='right',fill='y');canvas.pack(side='left',fill='both',expand=True)
-        inner=ttk.Frame(canvas);window=canvas.create_window((0,0),window=inner,anchor='nw')
-        inner.bind('<Configure>',lambda e:canvas.configure(scrollregion=canvas.bbox('all')))
-        canvas.bind('<Configure>',lambda e:canvas.itemconfigure(window,width=e.width))
-        def wheel(event):
-            if self.tabs.index(self.tabs.select())!=0:return
-            widget=self.winfo_containing(event.x_root,event.y_root)
-            if widget and str(widget).startswith(str(canvas)):
-                canvas.yview_scroll(-1 if event.delta>0 else 1,'units')
-        self.bind_all('<MouseWheel>',wheel,add='+')
+    def scroll_page(self,padding=0):
+        shell=ttk.Frame(self.tabs)
+        canvas=tk.Canvas(shell,bg='#f2f6f6',highlightthickness=0,yscrollincrement=1)
+        scrollbar=ttk.Scrollbar(shell,orient='vertical',command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right',fill='y');canvas.pack(side='left',fill='both',expand=True)
+        inner=ttk.Frame(canvas,padding=padding)
+        window=canvas.create_window((0,0),window=inner,anchor='nw')
+        def layout(event=None):
+            width=max(1,canvas.winfo_width())
+            canvas.itemconfigure(window,width=width)
+            height=max(inner.winfo_reqheight(),canvas.winfo_height())
+            canvas.itemconfigure(window,height=height)
+            canvas.configure(scrollregion=(0,0,width,height))
+        inner.bind('<Configure>',layout);canvas.bind('<Configure>',layout)
+        self._scroll_parents[inner]=canvas;self._scroll_parents[canvas]=canvas
+        return shell,inner
+
+    def add_scroll_page(self,title,padding=0):
+        shell,inner=self.scroll_page(padding)
+        self.tabs.add(shell,text=title)
         return inner
+
+    def overview_page(self):
+        self.overview_shell,inner=self.scroll_page()
+        return inner
+
+    def install_scrolling(self):
+        # A tag before Tk's widget/class tags prevents child widgets swallowing
+        # wheel events and avoids scrolling twice through native class bindings.
+        tag='FamilyShopScroll'
+        self._wheel_remainder={};self._drag_scroll=None
+        def attach(widget):
+            if tag not in widget.bindtags():widget.bindtags((tag,)+widget.bindtags())
+            for child in widget.winfo_children():attach(child)
+        attach(self)
+        self.bind_all('<Map>',lambda event:attach(event.widget) if hasattr(event.widget,'bindtags') else None,add='+')
+        self.bind_class(tag,'<MouseWheel>',self.scroll_wheel)
+        self.bind_class(tag,'<Button-4>',self.scroll_wheel)
+        self.bind_class(tag,'<Button-5>',self.scroll_wheel)
+        self.bind_class(tag,'<ButtonPress-1>',self.scroll_press)
+        self.bind_class(tag,'<B1-Motion>',self.scroll_drag)
+        self.bind_class(tag,'<ButtonRelease-1>',self.scroll_release)
+
+    def scroll_widget(self,event):
+        try:return self.winfo_containing(event.x_root,event.y_root) or event.widget
+        except (tk.TclError,KeyError):return event.widget
+
+    def scroll_wheel(self,event):
+        widget=self.scroll_widget(event)
+        if widget.winfo_class() in ('TCombobox','Entry','TEntry','Scrollbar','TScrollbar'):return
+        horizontal=bool(event.state & 0x0001)
+        axis='x' if horizontal else 'y'
+        number=getattr(event,'num',None)
+        if number in (4,5):motion=-3 if number==4 else 3
+        else:
+            delta=getattr(event,'delta',0)
+            if not delta:return
+            motion=-delta if sys.platform=='darwin' else -delta/120*3
+        target=scroll_target(widget,axis,motion,self._scroll_parents)
+        if target is None:return
+        key=(str(target),axis)
+        scale=24 if isinstance(target,tk.Canvas) else 1
+        amount=self._wheel_remainder.get(key,0)+motion*scale
+        units=int(amount)
+        self._wheel_remainder[key]=amount-units
+        if units:getattr(target,axis+'view_scroll')(units,'units')
+        return 'break'
+
+    def scroll_press(self,event):
+        self._drag_scroll=None
+        widget=self.scroll_widget(event)
+        kind=widget.winfo_class()
+        # Leave buttons, fields and editable text to native click/selection logic.
+        allowed=kind in ('Canvas','Frame','TFrame','Label','TLabel','Treeview')
+        if kind=='Text':allowed=str(widget.cget('state'))=='disabled'
+        if not allowed:return
+        self._drag_scroll={'widget':widget,'x':event.x_root,'start':event.y_root,'last':event.y_root,'active':False,'remainder':0.0}
+
+    def scroll_drag(self,event):
+        drag=self._drag_scroll
+        if not drag:return
+        if not drag['active']:
+            if abs(event.y_root-drag['start'])<8:return
+            if abs(event.x_root-drag['x'])>abs(event.y_root-drag['start']):return
+            drag['active']=True
+        motion=drag['last']-event.y_root;drag['last']=event.y_root
+        target=scroll_target(drag['widget'],'y',motion,self._scroll_parents)
+        if target is None:return
+        amount=motion if isinstance(target,tk.Canvas) else motion/24+drag['remainder']
+        units=int(amount);drag['remainder']=amount-units
+        if units:target.yview_scroll(units,'units')
+        return 'break'
+
+    def scroll_release(self,event):
+        active=self._drag_scroll and self._drag_scroll['active']
+        self._drag_scroll=None
+        if active:return 'break'
 
     def build_hero(self,parent):
         hero=tk.Frame(parent,bg='#173b45',height=130);hero.pack(fill='x',pady=(0,18));hero.pack_propagate(False)
@@ -394,7 +495,7 @@ class App(tk.Tk):
         return dict(zip(keys,([f"{row[k]/100:.2f}" for k in ['cash','ecocash','credit','cashout','expense']]+[row['note']]) if row else ['0']*5+['']))
 
     def build_operations(self):
-        frame=ttk.Frame(self.tabs,padding=16);self.tabs.add(frame,text='Orders & customer credit')
+        frame=self.add_scroll_page('Orders & customer credit',padding=16)
         toolbar=ttk.Frame(frame);toolbar.pack(fill='x',pady=(0,8))
         for i,(label,command) in enumerate([('Create purchase order',self.new_order),('Receive order / partial delivery',self.deliver),('Record customer credit sale',self.new_debt),('Record debt repayment',self.repayment),('Bring forward previous closing stock',self.carry)]):
             ttk.Button(toolbar,text=label,command=command).grid(row=i//3,column=i%3,sticky='w',padx=(0,8),pady=4)
@@ -454,7 +555,7 @@ class App(tk.Tk):
         except Exception as e:messagebox.showerror('Please check',str(e))
 
     def build_controls(self):
-        frame=ttk.Frame(self.tabs,padding=12);self.tabs.add(frame,text='History & controls')
+        frame=self.add_scroll_page('History & controls',padding=12)
         self.lock_status=ttk.Label(frame,text='',style='Section.TLabel');self.lock_status.pack(anchor='w',pady=(0,12))
         toolbar=ttk.Frame(frame);toolbar.pack(fill='x')
         ttk.Button(toolbar,text='Refresh desktop icon',command=self.desktop_shortcut).pack(side='right')
@@ -539,7 +640,7 @@ class App(tk.Tk):
 
     def build_cloud(self):
         self.cloud=None
-        frame=ttk.Frame(self.tabs,padding=18);self.tabs.add(frame,text='Online backup')
+        frame=self.add_scroll_page('Online backup',padding=18)
         self.cloud_status=ttk.Label(frame,text='OFFLINE MODE — cloud not connected',style='Section.TLabel');self.cloud_status.pack(anchor='w',pady=(0,16))
         ttk.Label(frame,text='Keep working offline. Connect only when you want to upload a backup or restore it on another PC.\nThis is manual backup and restore, not live multi-user sync. One account holds one shop snapshot.\nUse one active PC at a time. Upload before switching PCs; download before entering records on the next PC.',style='Muted.TLabel',wraplength=790).pack(anchor='w',pady=(0,18))
         for label,command in [('1. Save Supabase setup SQL',self.save_cloud_sql),('2. Configure project and sign in',self.cloud_signin),('Upload this PC to cloud',self.cloud_upload),('Download cloud copy to this PC',self.cloud_restore),('Return to offline mode',self.cloud_disconnect)]:
@@ -645,7 +746,7 @@ class App(tk.Tk):
     def build_scanner(self):
         from ledger import IMPORT_COLUMNS
         self.scan_source='Pasted text';self.scan_unparsed=[]
-        frame=ttk.Frame(self.tabs,padding=12);self.tabs.add(frame,text='Scan records')
+        frame=self.add_scroll_page('Scan records',padding=12)
         toolbar=ttk.Frame(frame);toolbar.pack(fill='x')
         ttk.Button(toolbar,text='Choose image & scan',command=self.choose_scan).pack(side='left')
         self.scan_mode=ttk.Combobox(toolbar,state='readonly',values=list(IMPORT_COLUMNS),width=18);self.scan_mode.set('Stock counts');self.scan_mode.pack(side='left',padx=8)

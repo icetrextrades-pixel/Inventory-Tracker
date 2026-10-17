@@ -1,4 +1,4 @@
-# Family Shop v0.9 — offline desktop edition
+# Family Shop v0.10 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -165,3 +165,11 @@ The dashboard adds an illustrated brand banner, pastel action symbols, accented 
 Brand assets are included as `family-shop.svg`, `family-shop.png` and `family-shop.ico`. They are native geometric artwork, not photos. Validation: all 26 tests pass, including embedded asset decoding, multi-resolution icon structure, persistent icon materialization and the existing accounting/report/updater checks. Windows shell integration and visual layout have not been tested in this environment.
 
 References: [Microsoft AppUserModelID](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-setcurrentprocessexplicitappusermodelid), [Tk window icons](https://www.tcl-lang.org/man/tcl8.7/TkCmd/wm.html).
+
+## v0.10 — mouse wheel, trackpad and drag scrolling
+
+Install with **Update App**. The old overview-only global wheel callback has been replaced with a routing tag that runs before Tk's normal widget/class bindings. Wheel events over labels and cards now reach the enclosing page; tables and text areas scroll first, then pass movement to the page when at their edge. Fractional wheel deltas accumulate for high-resolution trackpads. Shift + wheel scrolls horizontally where the target has horizontal content. Entries, dropdowns and scrollbars keep their native behaviour. Linux wheel button events and macOS wheel deltas are also handled, but have not been verified on those systems.
+
+Every section now has a scrollable page, so smaller windows can reach content without relying solely on an inner table's scrollbar. The overview uses pixel-based movement. Vertical click/touch dragging starts after an 8-pixel threshold on page backgrounds, cards, labels, tables and disabled/read-only text areas. Buttons and editable fields keep normal click/edit/select behaviour. This supports touchscreen gestures delivered by Windows as pointer drag events; it is not a native multi-touch or momentum/inertia implementation. Mouse-wheel, trackpad and touchscreen hardware behaviour must still be checked on Windows.
+
+All 30 tests pass, including wheel routing over child cards, nested table edge fallback, small trackpad delta accumulation, horizontal scrolling, drag thresholds and preserving button/entry interactions. No accounting data or calculation rules change.
