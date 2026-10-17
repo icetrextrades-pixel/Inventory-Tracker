@@ -1,4 +1,4 @@
-# Family Shop v0.6 — offline desktop edition
+# Family Shop v0.7 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -110,3 +110,29 @@ Open **History & controls** in the sidebar:
 - **History:** shows the newest 500 changes across all periods. Click a row to see before/after values. Money in these technical details is stored as cents; timestamps are UTC. Reasons are recorded for receipt corrections and period lock/reopen actions. Ordinary saved entries use `Record saved`. The full history remains in SQLite beyond the 500 displayed rows.
 
 This is a local operational history using the computer username, not authenticated user roles, accounting sign-off or tamper-proof security. Reopening an earlier period does not automatically revise opening balances already copied to later periods; review those separately. All 17 tests pass, including blocked locked-period edits, reopening/history snapshots, receipt/order synchronization, impossible-count rejection and later repayments of locked-period debts. New desktop controls still need a Windows interaction check.
+
+## v0.7 — optional online backup and restore
+
+Install through **Update App**. Online features use Supabase; normal accounting stays local and works without internet. No new Python packages are required.
+
+### One-time cloud setup
+
+1. Use a dedicated Supabase project for the shop. In the app select **Online backup → Save Supabase setup SQL**. Run that file in your project's SQL editor. It is also available as `offline_shop/cloud_setup.sql` on GitHub. The app embeds the script, so existing updaters do not need to download extra files.
+2. In Supabase Authentication create and confirm an email/password user for your shop. Account creation, password resets and verification are managed in Supabase for this version.
+3. In the app choose **Configure project and sign in**. Enter the HTTPS project URL, public publishable or legacy anon key, and that user's email/password. Never use a secret or service-role key. Only `https://<project>.supabase.co` project URLs are supported.
+4. Choose **Upload this PC to cloud** to transfer your current database. This sends all shop records and history to the configured project/account; nothing uploads merely by signing in.
+5. On another PC, install/update Family Shop, sign in to the same shop account, and choose **Download cloud copy to this PC**. This replaces its local records after saving a dated local backup. Close other Family Shop windows first.
+
+### Transfer rules and limits
+
+This is **manual snapshot backup/restore, not live synchronization or record merging**. One authenticated account owns one complete shop snapshot. Separate accounts have separate snapshots; staff membership and cross-account collaboration are not implemented. Use one active PC at a time: upload before switching, then download on the next PC before entering new data.
+
+The backend uses owner-based row-level access rules and an atomic expected-version upload function. A PC with an older cloud version cannot silently overwrite a newer copy. An existing cloud backup also blocks a first-time PC from uploading until it downloads the current copy. Back up any unsent local changes separately before downloading; they are not merged. Only the latest snapshot is stored in the cloud. Keep separate local backups for historical recovery.
+
+Passwords and session tokens are held in memory only. Project URL, public key, email and per-account version markers are saved locally outside the database. Signing out clears the local session. Sessions can expire; sign in again if a request reports an authentication failure. Requests use HTTPS; copies are **not end-to-end encrypted** and project administrators can access records. The shop database remains unencrypted on your PC as before.
+
+Cloud snapshots are limited to 10 MiB in this initial version. Downloads are checked for format, SHA-256 integrity, SQLite integrity, required shop tables and foreign-key validity before replacing local records. A dated local backup is made before restore. Downloads and uploads run in the background while a modal window prevents editing. Online access requires network access to your Supabase project. Pricing, quotas and service availability depend on your Supabase account; no plan or unlimited free storage is assumed.
+
+Validation: **21 tests pass**, including snapshot round-trip, version payload, conflict handling, error redaction, hostile URL/privileged key rejection and tampered/invalid database checks. HTTP responses are mocked for cloud tests. SQL deployment, cross-account RLS and real sign-in/upload/restore still require integration testing against your configured Supabase project. No project credentials were supplied and no live backend was provisioned.
+
+References: [Supabase password authentication](https://supabase.com/docs/guides/auth/passwords), [row-level security](https://supabase.com/docs/guides/database/postgres/row-level-security), [database functions](https://supabase.com/docs/guides/database/functions).

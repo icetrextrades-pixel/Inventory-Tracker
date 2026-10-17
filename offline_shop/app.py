@@ -50,10 +50,10 @@ class App(tk.Tk):
         tk.Label(sidebar,text='FAMILY\nSHOP',font=('Segoe UI',24,'bold'),bg='#142d32',fg='#ffffff',justify='left').pack(anchor='w',padx=24,pady=(30,4))
         tk.Label(sidebar,text='YOUR DAILY BUSINESS',font=('Segoe UI',8,'bold'),bg='#142d32',fg='#8cb9b6').pack(anchor='w',padx=24,pady=(0,32))
         self.nav_buttons=[]
-        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls']):
+        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls','Online backup']):
             button=tk.Button(sidebar,text=label,anchor='w',font=('Segoe UI',11),bg='#142d32',fg='#c9dcdd',activebackground='#23545a',activeforeground='white',relief='flat',borderwidth=0,padx=22,pady=14,cursor='hand2',command=lambda i=index:self.navigate(i))
             button.pack(fill='x',padx=10,pady=3);self.nav_buttons.append(button)
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.6  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.7  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -109,6 +109,7 @@ class App(tk.Tk):
         ttk.Label(workspace,text='Saved on this computer  •  USD  •  Back up regularly',style='Muted.TLabel').pack(anchor='w',pady=(12,0))
         self.build_operations()
         self.build_controls()
+        self.build_cloud()
         self.reload_periods()
         self.navigate(0)
 
@@ -139,7 +140,7 @@ class App(tk.Tk):
 
     def navigate(self,index):
         self.tabs.select(index)
-        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls'][index])
+        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls','Online backup & restore'][index])
         for i,button in enumerate(self.nav_buttons):
             button.configure(bg='#23545a' if i==index else '#142d32',fg='white' if i==index else '#c9dcdd')
 
@@ -162,6 +163,7 @@ class App(tk.Tk):
             ttk.Label(win,text=label).grid(row=i,column=0,sticky='w',padx=16,pady=6)
             v=tk.StringVar(value=default); values[label]=v
             widget=ttk.Combobox(win,textvariable=v,values=choices,state='readonly',width=42) if choices is not None else ttk.Entry(win,textvariable=v,width=45)
+            if 'password' in label.lower():widget.configure(show='•')
             widget.grid(row=i,column=1,padx=16,pady=6)
         if loader:
             def load_existing(*_):
@@ -311,7 +313,7 @@ class App(tk.Tk):
         toolbar=ttk.Frame(frame);toolbar.pack(fill='x')
         ttk.Button(toolbar,text='Lock / reopen period',command=self.toggle_lock).pack(side='left',padx=(0,8))
         ttk.Button(toolbar,text='Correct / void receipt',command=self.correct_delivery).pack(side='left')
-        ttk.Label(frame,text='History covers changes from v0.6 onward, across all periods. Select a row to inspect before and after.\nLocking protects period records; reopening requires a reason. Repayments are protected by payment date.\nYour computer username identifies changes. This local history is not tamper-proof security.',style='Muted.TLabel',wraplength=800).pack(anchor='w',pady=14)
+        ttk.Label(frame,text='History covers changes from v0.7 onward, across all periods. Select a row to inspect before and after.\nLocking protects period records; reopening requires a reason. Repayments are protected by payment date.\nYour computer username identifies changes. This local history is not tamper-proof security.',style='Muted.TLabel',wraplength=800).pack(anchor='w',pady=14)
         self.history_table=self.register_table(frame,['Time UTC','User','Record','Action','Reason'])
         self.history_table.bind('<<TreeviewSelect>>',self.history_detail)
         self.history_text=tk.Text(frame,height=7,wrap='word',font=('Consolas',10),bg='white',fg='#244047',relief='flat',padx=12,pady=12)
@@ -387,6 +389,111 @@ class App(tk.Tk):
             if not webbrowser.open(path.as_uri()):
                 messagebox.showinfo('Report saved',f'Open this report in your browser to print or save PDF:\n{path}')
         except Exception as exc:messagebox.showerror('Report could not be prepared',str(exc))
+
+    def build_cloud(self):
+        self.cloud=None
+        frame=ttk.Frame(self.tabs,padding=18);self.tabs.add(frame,text='Online backup')
+        self.cloud_status=ttk.Label(frame,text='OFFLINE MODE — cloud not connected',style='Section.TLabel');self.cloud_status.pack(anchor='w',pady=(0,16))
+        ttk.Label(frame,text='Keep working offline. Connect only when you want to upload a backup or restore it on another PC.\nThis is manual backup and restore, not live multi-user sync. One account holds one shop snapshot.\nUse one active PC at a time. Upload before switching PCs; download before entering records on the next PC.',style='Muted.TLabel',wraplength=790).pack(anchor='w',pady=(0,18))
+        for label,command in [('1. Save Supabase setup SQL',self.save_cloud_sql),('2. Configure project and sign in',self.cloud_signin),('Upload this PC to cloud',self.cloud_upload),('Download cloud copy to this PC',self.cloud_restore),('Return to offline mode',self.cloud_disconnect)]:
+            ttk.Button(frame,text=label,command=command).pack(anchor='w',pady=6)
+        ttk.Label(frame,text='First setup: run the SQL in a dedicated Supabase project, then create/confirm an email/password user in Authentication.\nEnter the project URL and publishable/anon key here. Never enter a service-role/secret key.\nPasswords and session tokens are kept in memory only. Project settings and cloud version markers stay on this PC.\nCloud copies contain your shop records and change history. Only upload to a project/account you control.\nTransfers use HTTPS and owner-based database access rules; backups are not end-to-end encrypted.\nThe latest cloud snapshot is replaced by each successful upload. Keep local backups too.',style='Muted.TLabel',wraplength=790).pack(anchor='w',pady=24)
+
+    def save_cloud_sql(self):
+        from ledger import CLOUD_SETUP_SQL
+        target=filedialog.asksaveasfilename(defaultextension='.sql',initialfile='family_shop_cloud_setup.sql')
+        if target:
+            try:Path(target).write_text(CLOUD_SETUP_SQL,encoding='utf-8');messagebox.showinfo('Setup script saved','Run this SQL in your Supabase project SQL editor, then create an email/password user in Authentication.')
+            except OSError as exc:messagebox.showerror('Could not save SQL',str(exc))
+
+    def cloud_job(self,title,work,done):
+        popup=tk.Toplevel(self);popup.title(title);popup.transient(self);popup.grab_set();popup.resizable(False,False)
+        ttk.Label(popup,text=title+'… Please wait.',padding=24).pack()
+        popup.protocol('WM_DELETE_WINDOW',lambda:None)
+        results=queue.Queue()
+        def worker():
+            try:results.put((True,work()))
+            except Exception as exc:results.put((False,str(exc)))
+        threading.Thread(target=worker,daemon=True).start()
+        def poll():
+            try:ok,result=results.get_nowait()
+            except queue.Empty:self.after(150,poll);return
+            popup.destroy()
+            if ok:
+                try:done(result)
+                except Exception as exc:messagebox.showerror(title,str(exc))
+            else:messagebox.showerror(title,result)
+        self.after(150,poll)
+
+    def cloud_signin(self):
+        import json
+        try:config=json.loads((DATA/'cloud-settings.json').read_text())
+        except (OSError,ValueError):config={}
+        def save(v):
+            from ledger import Cloud
+            client=Cloud(v['Project URL'],v['Publishable / anon key'])
+            email,password=v['Email'],v['Password']
+            def done(_):
+                self.cloud=client
+                (DATA/'cloud-settings.json').write_text(json.dumps({'url':client.url,'key':client.key,'email':email}),encoding='utf-8')
+                self.cloud_status.configure(text='ONLINE SESSION — signed in (manual transfers)')
+                messagebox.showinfo('Connected','Signed in. Upload to create a cloud backup, or download an existing copy. Shop records remain local until you choose Upload.')
+            self.after(100,lambda:self.cloud_job('Signing in',lambda:client.login(email,password),done))
+        self.form('Connect online backup',[('Project URL',config.get('url',''),None),('Publishable / anon key',config.get('key',''),None),('Email',config.get('email',''),None),('Password','',None)],save)
+
+    def cloud_disconnect(self):
+        self.cloud=None;self.cloud_status.configure(text='OFFLINE MODE — cloud not connected')
+
+    def cloud_marker(self,version=None):
+        import hashlib,json
+        key=hashlib.sha256((self.cloud.url+'|'+self.cloud.owner).encode()).hexdigest()
+        path=DATA/('cloud-version-'+key+'.json')
+        if version is not None:path.write_text(json.dumps({'version':version}),encoding='utf-8')
+        try:return int(json.loads(path.read_text())['version'])
+        except (OSError,ValueError,KeyError):return 0
+
+    def cloud_upload(self):
+        if not self.cloud:messagebox.showinfo('Online backup','Configure the project and sign in first.');return
+        if not messagebox.askyesno('Upload shop records','Upload this PC’s complete shop database to your Supabase account? This replaces the previous cloud snapshot. Continue only if this is the current working copy.'):
+            return
+        try:
+            import tempfile
+            fd,name=tempfile.mkstemp(suffix='.sqlite3',dir=DATA);os.close(fd);snapshot=Path(name)
+            self.ledger.backup(snapshot);client=self.cloud;expected=self.cloud_marker()
+            def work():
+                try:return client.upload(snapshot,expected)
+                finally:snapshot.unlink(missing_ok=True)
+            def done(version):
+                self.cloud_marker(version)
+                self.cloud_status.configure(text=f'ONLINE SESSION — uploaded cloud version {version}')
+                messagebox.showinfo('Cloud backup saved',f'Uploaded version {version}. You can continue offline or download it on another PC.')
+            self.cloud_job('Uploading cloud backup',work,done)
+        except Exception as exc:messagebox.showerror('Upload failed',str(exc))
+
+    def cloud_restore(self):
+        if not self.cloud:messagebox.showinfo('Online backup','Configure the project and sign in first.');return
+        if not messagebox.askyesno('Replace local records','Download the cloud snapshot and replace this PC’s shop records? Any unsent local changes will be replaced. A dated local backup will be saved first. Close other Family Shop windows before continuing.'):
+            return
+        import tempfile
+        fd,name=tempfile.mkstemp(suffix='.sqlite3',dir=DATA);os.close(fd);snapshot=Path(name);client=self.cloud
+        def work():
+            try:return client.download(snapshot)
+            except Exception:snapshot.unlink(missing_ok=True);raise
+        def done(version):
+            from datetime import datetime
+            try:
+                # Upgrade/validate downloaded data before replacing the working database.
+                check=Ledger(snapshot);check.db.close()
+                backup=DATA/('before-cloud-restore-'+datetime.now().strftime('%Y%m%d-%H%M%S')+'.sqlite3')
+                self.ledger.backup(backup)
+                self.ledger.db.close()
+                try:os.replace(snapshot,DATA/'shop.sqlite3')
+                finally:self.ledger=Ledger(DATA/'shop.sqlite3')
+                self.cloud_marker(version);self.reload_periods()
+                self.cloud_status.configure(text=f'ONLINE SESSION — downloaded cloud version {version}')
+                messagebox.showinfo('Cloud copy restored',f'Downloaded version {version}. Previous local records were backed up to {backup.name}.')
+            finally:snapshot.unlink(missing_ok=True)
+        self.cloud_job('Downloading cloud backup',work,done)
 
     def check_update(self):
         self.update_button.configure(state='disabled',text='Checking…')

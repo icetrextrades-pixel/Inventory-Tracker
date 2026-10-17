@@ -248,3 +248,74 @@ class Ledger:
             self.db.execute('UPDATE receipts SET units=?,goods=?,freight=? WHERE id=?',(units,goods,freight,receipt_id))
             if delivery:self.db.execute('UPDATE deliveries SET units=? WHERE id=?',(units,delivery['id']))
             self.db.execute("UPDATE change_context SET reason='Record saved' WHERE id=1")
+
+
+class Cloud:
+    """Manual account-scoped snapshot transfer. Tokens live only in memory."""
+    MAX_DB=10*1024*1024
+
+    def __init__(self,url,key):
+        import re,base64,json
+        url=url.strip().rstrip('/')
+        if not re.fullmatch(r'https://[a-z0-9-]+\.supabase\.co',url):
+            raise ValueError('Use the HTTPS project URL, such as https://project.supabase.co.')
+        if key.startswith('sb_secret_'):raise ValueError('Use the publishable/anon key, never a secret/service-role key.')
+        if key.startswith('eyJ'):
+            try:
+                part=key.split('.')[1];claims=json.loads(base64.urlsafe_b64decode(part+'='*(-len(part)%4)))
+                if claims.get('role')!='anon':raise ValueError('Use the anon key, not a privileged key.')
+            except (IndexError,KeyError):raise ValueError('Invalid project key.') from None
+        elif not key.startswith('sb_publishable_'):raise ValueError('Enter a publishable or legacy anon key.')
+        self.url=url;self.key=key.strip();self.token=None;self.owner=None
+
+    def request(self,path,payload=None):
+        import json,urllib.request,urllib.error
+        headers={'apikey':self.key,'Content-Type':'application/json'}
+        if self.token:headers['Authorization']='Bearer '+self.token
+        request=urllib.request.Request(self.url+path,data=json.dumps(payload).encode() if payload is not None else None,headers=headers)
+        try:
+            with urllib.request.urlopen(request,timeout=45) as response:data=response.read(17000001)
+            if len(data)>17000000:raise ValueError('Cloud response too large.')
+            return json.loads(data) if data else None
+        except urllib.error.HTTPError as error:
+            body=error.read(4096).decode('utf-8',errors='replace')
+            if 'CLOUD_CONFLICT' in body:raise ValueError('A newer cloud copy exists. Upload blocked. Back up this PC and download the cloud copy before continuing.') from None
+            raise ValueError(f'Cloud request failed (HTTP {error.code}). Check sign-in, project setup and access policies. Sign in again if your session expired.') from None
+
+    def login(self,email,password):
+        result=self.request('/auth/v1/token?grant_type=password',{'email':email,'password':password})
+        self.token=result['access_token'];self.owner=result['user']['id']
+
+    def upload(self,path,expected):
+        import base64,json,hashlib
+        from pathlib import Path
+        data=Path(path).read_bytes()
+        if len(data)>self.MAX_DB:raise ValueError('Cloud backup supports databases up to 10 MiB in this version.')
+        snapshot=json.dumps({'format':1,'sha256':hashlib.sha256(data).hexdigest(),'database':base64.b64encode(data).decode()})
+        return self.request('/rest/v1/rpc/family_shop_upload',{'expected_version':expected,'snapshot':snapshot})
+
+    def download(self,path):
+        import base64,json,hashlib
+        from pathlib import Path
+        if not self.owner:raise ValueError('Sign in first.')
+        rows=self.request('/rest/v1/family_shop_backups?select=version,payload,updated_at&owner=eq.'+self.owner)
+        if not rows:raise ValueError('No cloud backup found for this account.')
+        snapshot=json.loads(rows[0]['payload'])
+        if snapshot.get('format')!=1:raise ValueError('Unsupported cloud backup format.')
+        data=base64.b64decode(snapshot['database'],validate=True)
+        if len(data)>self.MAX_DB or hashlib.sha256(data).hexdigest()!=snapshot['sha256']:raise ValueError('Backup integrity check failed.')
+        Path(path).write_bytes(data)
+        db=None
+        try:
+            db=sqlite3.connect(path)
+            if db.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise ValueError('Cloud database is damaged.')
+            tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {'products','periods','stock','receipts','cash'}.issubset(tables):raise ValueError('Not a Family Shop database.')
+            if db.execute('PRAGMA foreign_key_check').fetchone():raise ValueError('Cloud database contains invalid references.')
+        except sqlite3.DatabaseError:raise ValueError('Invalid cloud database.') from None
+        finally:
+            if db:db.close()
+        return int(rows[0]['version'])
+
+
+CLOUD_SETUP_SQL = "-- Run once in your dedicated Supabase project's SQL editor.\ncreate table if not exists public.family_shop_backups (\n  owner uuid primary key references auth.users(id) on delete cascade,\n  version bigint not null check (version > 0),\n  payload text not null check (octet_length(payload) <= 16000000),\n  updated_at timestamptz not null default now()\n);\nalter table public.family_shop_backups enable row level security;\nrevoke all on public.family_shop_backups from anon;\ngrant select, insert, update on public.family_shop_backups to authenticated;\ndrop policy if exists family_shop_owner on public.family_shop_backups;\ncreate policy family_shop_owner on public.family_shop_backups for all to authenticated\nusing ((select auth.uid()) = owner) with check ((select auth.uid()) = owner);\n\ncreate or replace function public.family_shop_upload(expected_version bigint, snapshot text)\nreturns bigint language plpgsql security invoker set search_path = '' as $$\ndeclare next_version bigint;\nbegin\n  if auth.uid() is null then raise exception 'Sign in required'; end if;\n  if expected_version < 0 or octet_length(snapshot)>16000000 then raise exception 'Invalid snapshot'; end if;\n  if expected_version = 0 then\n    insert into public.family_shop_backups(owner,version,payload)\n      values(auth.uid(),1,snapshot) on conflict do nothing returning version into next_version;\n  else\n    update public.family_shop_backups set version=version+1,payload=snapshot,updated_at=now()\n      where owner=auth.uid() and version=expected_version returning version into next_version;\n  end if;\n  if next_version is null then raise exception 'CLOUD_CONFLICT: Download the newer cloud copy before uploading'; end if;\n  return next_version;\nend $$;\nrevoke execute on function public.family_shop_upload(bigint,text) from public, anon;\ngrant execute on function public.family_shop_upload(bigint,text) to authenticated;\n"
