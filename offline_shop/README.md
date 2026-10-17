@@ -1,4 +1,4 @@
-# Family Shop v0.5 — offline desktop edition
+# Family Shop v0.6 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -98,3 +98,15 @@ Validation: 13 tests pass. The Windows tables and browser print layout still req
 Use **Update App** to install. No new dependencies or database changes.
 
 The new layout includes a dark teal navigation sidebar, a light workspace, summary cards for stock-implied sales, provisional profit and unexplained differences, a two-column grid of daily actions, more consistent typography, roomier tables and styled entry forms. Navigate with Overview, Stock & reports, Daily registers and Orders & credit. The minimum window size is 1060 × 720; the default is 1280 × 850. Large Windows display scaling can reduce available space; maximize the window if needed. Figures retain the existing accounting rules and remain provisional. All 13 calculation/report/updater tests pass; the refreshed desktop appearance still needs a Windows screen check.
+
+## v0.6 — record corrections, history and period controls
+
+Install with **Update App**. Existing records are preserved; the database gains history and control tables/triggers. History begins at this upgrade and does not reconstruct earlier edits.
+
+Open **History & controls** in the sidebar:
+
+- **Correct / void receipt:** select a received line in the chosen period. Correct individual units, total goods cost and delivery cost, giving a reason. For a duplicate receipt enter zero units and zero costs. The receipt stays in the register at zero and the previous values remain in history. Linked purchase-order received quantities adjust in the same transaction. Corrections that exceed ordered units or make stock counts impossible are rejected. Dates, products and references cannot be changed here; void the wrong line and record a replacement if needed. Customer debt/repayment correction workflows are not yet included.
+- **Lock / reopen period:** lock a completed period with a reason. A backup is created before changing the lock. Locked periods reject new entries, edits and deletions for stock, receipts, daily money and customer credit sales. Repayments are guarded by payment date, so customers can repay an older debt in a later open period. Locking does not certify figures as correct or require a zero reconciliation difference; check the report and warnings first. Purchase orders and product creation remain available.
+- **History:** shows the newest 500 changes across all periods. Click a row to see before/after values. Money in these technical details is stored as cents; timestamps are UTC. Reasons are recorded for receipt corrections and period lock/reopen actions. Ordinary saved entries use `Record saved`. The full history remains in SQLite beyond the 500 displayed rows.
+
+This is a local operational history using the computer username, not authenticated user roles, accounting sign-off or tamper-proof security. Reopening an earlier period does not automatically revise opening balances already copied to later periods; review those separately. All 17 tests pass, including blocked locked-period edits, reopening/history snapshots, receipt/order synchronization, impossible-count rejection and later repayments of locked-period debts. New desktop controls still need a Windows interaction check.

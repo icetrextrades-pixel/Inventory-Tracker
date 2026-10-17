@@ -50,10 +50,10 @@ class App(tk.Tk):
         tk.Label(sidebar,text='FAMILY\nSHOP',font=('Segoe UI',24,'bold'),bg='#142d32',fg='#ffffff',justify='left').pack(anchor='w',padx=24,pady=(30,4))
         tk.Label(sidebar,text='YOUR DAILY BUSINESS',font=('Segoe UI',8,'bold'),bg='#142d32',fg='#8cb9b6').pack(anchor='w',padx=24,pady=(0,32))
         self.nav_buttons=[]
-        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit']):
+        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit','History & controls']):
             button=tk.Button(sidebar,text=label,anchor='w',font=('Segoe UI',11),bg='#142d32',fg='#c9dcdd',activebackground='#23545a',activeforeground='white',relief='flat',borderwidth=0,padx=22,pady=14,cursor='hand2',command=lambda i=index:self.navigate(i))
             button.pack(fill='x',padx=10,pady=3);self.nav_buttons.append(button)
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.5  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.6  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -108,6 +108,7 @@ class App(tk.Tk):
         self.cash_table=self.register_table(self.log,['Date','Cash USD','EcoCash USD','Credit USD','Paid out USD','Expenses USD','Notes'])
         ttk.Label(workspace,text='Saved on this computer  •  USD  •  Back up regularly',style='Muted.TLabel').pack(anchor='w',pady=(12,0))
         self.build_operations()
+        self.build_controls()
         self.reload_periods()
         self.navigate(0)
 
@@ -138,7 +139,7 @@ class App(tk.Tk):
 
     def navigate(self,index):
         self.tabs.select(index)
-        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit'][index])
+        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit','History & period controls'][index])
         for i,button in enumerate(self.nav_buttons):
             button.configure(bg='#23545a' if i==index else '#142d32',fg='white' if i==index else '#c9dcdd')
 
@@ -166,7 +167,7 @@ class App(tk.Tk):
             def load_existing(*_):
                 for key,value in loader({k:v.get() for k,v in values.items()}).items():
                     values[key].set(value)
-            for key in ('Product','Date YYYY-MM-DD'):
+            for key in ('Product','Date YYYY-MM-DD','Receipt'):
                 if key in values: values[key].trace_add('write',load_existing)
             load_existing()
         def submit():
@@ -216,6 +217,7 @@ class App(tk.Tk):
             for key,label in self.metric_values.items():label.configure(text='$ '+metrics[key])
         except ValueError:
             for label in self.metric_values.values():label.configure(text='—')
+        self.refresh_controls()
         self.refresh_registers()
         self.refresh_operations()
         self.summary.configure(state='normal');self.summary.delete('1.0','end');self.summary.insert('end',text);self.summary.configure(state='disabled')
@@ -302,6 +304,56 @@ class App(tk.Tk):
             start,end=self.ledger.carry_forward(p);self.refresh()
             messagebox.showinfo('Stock brought forward',f'Copied closing stock from {start} to {end}. Update actual closing quantities before reporting.')
         except Exception as e:messagebox.showerror('Please check',str(e))
+
+    def build_controls(self):
+        frame=ttk.Frame(self.tabs,padding=12);self.tabs.add(frame,text='History & controls')
+        self.lock_status=ttk.Label(frame,text='',style='Section.TLabel');self.lock_status.pack(anchor='w',pady=(0,12))
+        toolbar=ttk.Frame(frame);toolbar.pack(fill='x')
+        ttk.Button(toolbar,text='Lock / reopen period',command=self.toggle_lock).pack(side='left',padx=(0,8))
+        ttk.Button(toolbar,text='Correct / void receipt',command=self.correct_delivery).pack(side='left')
+        ttk.Label(frame,text='History covers changes from v0.6 onward, across all periods. Select a row to inspect before and after.\nLocking protects period records; reopening requires a reason. Repayments are protected by payment date.\nYour computer username identifies changes. This local history is not tamper-proof security.',style='Muted.TLabel',wraplength=800).pack(anchor='w',pady=14)
+        self.history_table=self.register_table(frame,['Time UTC','User','Record','Action','Reason'])
+        self.history_table.bind('<<TreeviewSelect>>',self.history_detail)
+        self.history_text=tk.Text(frame,height=7,wrap='word',font=('Consolas',10),bg='white',fg='#244047',relief='flat',padx=12,pady=12)
+        self.history_text.pack(fill='x',pady=(12,0));self.history_text.configure(state='disabled')
+
+    def refresh_controls(self):
+        if not hasattr(self,'history_table'):return
+        self.history_table.delete(*self.history_table.get_children())
+        try:self.lock_status.configure(text='Selected period: LOCKED' if self.ledger.period_locked(self.pid()) else 'Selected period: OPEN')
+        except ValueError:self.lock_status.configure(text='Create a reporting period to begin.')
+        for row in self.ledger.db.execute('SELECT * FROM audit_log ORDER BY id DESC LIMIT 500'):
+            self.history_table.insert('','end',iid=str(row['id']),values=[row['at'],row['actor'],f"{row['entity']} #{row['record_id']}",row['action'],row['reason']])
+
+    def history_detail(self,event=None):
+        selected=self.history_table.selection()
+        if not selected:return
+        import json
+        row=self.ledger.db.execute('SELECT * FROM audit_log WHERE id=?',(int(selected[0]),)).fetchone()
+        text='BEFORE\n'+json.dumps(json.loads(row['before_data']) if row['before_data'] else None,indent=2)+'\n\nAFTER\n'+json.dumps(json.loads(row['after_data']) if row['after_data'] else None,indent=2)+'\n\nStored monetary values are cents.'
+        self.history_text.configure(state='normal');self.history_text.delete('1.0','end');self.history_text.insert('end',text);self.history_text.configure(state='disabled')
+
+    def toggle_lock(self):
+        try:
+            p=self.pid();locked=self.ledger.period_locked(p)
+            def save(v):
+                from datetime import datetime
+                self.ledger.backup(DATA/f"before-period-change-{datetime.now().strftime('%Y%m%d-%H%M%S')}.sqlite3")
+                self.ledger.set_lock(p,not locked,v['Reason'])
+            self.form('Reopen period' if locked else 'Lock completed period',[('Reason','',None)],save)
+        except Exception as exc:messagebox.showerror('Period control',str(exc))
+
+    def correct_delivery(self):
+        try:
+            p=self.pid()
+            rows={f"#{r['id']} {r['day']} | {r['name']} | {r['units']} units":dict(r) for r in self.ledger.db.execute('SELECT r.*,p.name FROM receipts r JOIN products p ON p.id=r.product WHERE period=? ORDER BY r.id DESC',(p,))}
+            if not rows:raise ValueError('No receipts in this period.')
+            def defaults(v):
+                row=rows[v['Receipt']]
+                return {'Units':row['units'],'Goods cost':f"{row['goods']/100:.2f}",'Delivery cost':f"{row['freight']/100:.2f}"}
+            def save(v):self.ledger.correct_receipt(rows[v['Receipt']]['id'],v['Units'],v['Goods cost'],v['Delivery cost'],v['Reason'])
+            self.form('Correct receipt (zero units and costs to void)',[('Receipt',next(iter(rows)),list(rows)),('Units','0',None),('Goods cost','0',None),('Delivery cost','0',None),('Reason','',None)],save,loader=defaults)
+        except Exception as exc:messagebox.showerror('Receipt correction',str(exc))
 
     def register_table(self,parent,columns):
         box=ttk.Frame(parent);box.pack(expand=True,fill='both')

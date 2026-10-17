@@ -35,6 +35,7 @@ class Ledger:
         ''')
 
         self.upgrade()
+        self.install_controls()
 
     def product(self, name, unit):
         if not name.strip() or not unit.strip():
@@ -181,3 +182,69 @@ class Ledger:
         if not self.db.execute('SELECT 1 FROM stock WHERE period=?',(period,)).fetchone():
             warnings.append('No stock counts entered for this period.')
         return warnings
+
+    def install_controls(self):
+        """Additive migration: log future changes and guard writes in locked periods."""
+        import getpass
+        self.db.executescript('''
+        CREATE TABLE IF NOT EXISTS period_locks(period INTEGER PRIMARY KEY REFERENCES periods(id), reason TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS change_context(id INTEGER PRIMARY KEY CHECK(id=1), actor TEXT, reason TEXT);
+        CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')), actor TEXT, reason TEXT, entity TEXT, action TEXT, record_id INTEGER, before_data TEXT, after_data TEXT);
+        INSERT OR IGNORE INTO change_context VALUES (1,'Local user','Record saved');
+        ''')
+        self.db.execute('UPDATE change_context SET actor=? WHERE id=1',(getpass.getuser(),))
+        for table in ['products','periods','stock','receipts','cash','orders','deliveries','customers','debts','repayments','period_locks']:
+            columns=[r['name'] for r in self.db.execute(f'PRAGMA table_info({table})')]
+            def jsonrow(prefix):
+                return 'json_object('+','.join("'"+c+"',"+prefix+'.'+c for c in columns)+')'
+            idcol='period' if table=='period_locks' else 'id'
+            for action in ['INSERT','UPDATE','DELETE']:
+                before=jsonrow('OLD') if action!='INSERT' else 'NULL'
+                after=jsonrow('NEW') if action!='DELETE' else 'NULL'
+                prefix='OLD' if action=='DELETE' else 'NEW'
+                self.db.execute(f'''CREATE TRIGGER IF NOT EXISTS audit_{table}_{action} AFTER {action} ON {table} BEGIN
+                    INSERT INTO audit_log(actor,reason,entity,action,record_id,before_data,after_data)
+                    SELECT actor,reason,'{table}','{action}',{prefix}.{idcol},{before},{after} FROM change_context WHERE id=1; END''')
+        for table in ['stock','receipts','cash','debts']:
+            for action,prefixes in [('INSERT',['NEW']),('UPDATE',['OLD','NEW']),('DELETE',['OLD'])]:
+                guard=' OR '.join(f'EXISTS(SELECT 1 FROM period_locks WHERE period={prefix}.period)' for prefix in prefixes)
+                self.db.execute(f"CREATE TRIGGER IF NOT EXISTS guard_{table}_{action} BEFORE {action} ON {table} WHEN {guard} BEGIN SELECT RAISE(ABORT,'Reporting period is locked. Reopen it with a reason before making changes.'); END")
+        for action,prefixes in [('INSERT',['NEW']),('UPDATE',['OLD','NEW']),('DELETE',['OLD'])]:
+            guard=' OR '.join(f'EXISTS(SELECT 1 FROM periods p JOIN period_locks l ON l.period=p.id WHERE {prefix}.day BETWEEN p.start AND p.end)' for prefix in prefixes)
+            self.db.execute(f"CREATE TRIGGER IF NOT EXISTS guard_repayments_{action} BEFORE {action} ON repayments WHEN {guard} BEGIN SELECT RAISE(ABORT,'Payment date falls in a locked period. Reopen that period first.'); END")
+        self.db.commit()
+
+    def period_locked(self,period):
+        return bool(self.db.execute('SELECT 1 FROM period_locks WHERE period=?',(period,)).fetchone())
+
+    def set_lock(self,period,locked,reason):
+        if not reason.strip():raise ValueError('A reason is required.')
+        if locked:
+            self.report(period)
+            if not self.db.execute('SELECT 1 FROM stock WHERE period=?',(period,)).fetchone():raise ValueError('Enter stock counts before locking the period.')
+        with self.db:
+            self.db.execute('UPDATE change_context SET reason=? WHERE id=1',(reason.strip(),))
+            if locked:self.db.execute('INSERT INTO period_locks(period,reason) VALUES (?,?)',(period,reason.strip()))
+            else:self.db.execute('DELETE FROM period_locks WHERE period=?',(period,))
+            self.db.execute("UPDATE change_context SET reason='Record saved' WHERE id=1")
+
+    def correct_receipt(self,receipt_id,units,goods,freight,reason):
+        if not reason.strip():raise ValueError('Explain the correction.')
+        units=quantity(units);goods=money(goods);freight=money(freight)
+        if not units and (goods or freight):raise ValueError('A void receipt must have zero units and zero costs.')
+        with self.db:
+            receipt=self.db.execute('SELECT * FROM receipts WHERE id=?',(receipt_id,)).fetchone()
+            if not receipt:raise ValueError('Receipt not found.')
+            count=self.db.execute('SELECT * FROM stock WHERE period=? AND product=?',(receipt['period'],receipt['product'])).fetchone()
+            others=self.db.execute('SELECT COALESCE(SUM(units),0) FROM receipts WHERE period=? AND product=? AND id<>?',(receipt['period'],receipt['product'],receipt_id)).fetchone()[0]
+            if count and count['closing']+count['drawings']+count['broken']>count['opening']+others+units:
+                raise ValueError('This correction would make stock counts impossible. Correct the stock count first.')
+            delivery=self.db.execute('SELECT * FROM deliveries WHERE receipt_id=?',(receipt_id,)).fetchone()
+            if delivery:
+                ordered=self.db.execute('SELECT units FROM orders WHERE id=?',(delivery['order_id'],)).fetchone()[0]
+                other=self.db.execute('SELECT COALESCE(SUM(units),0) FROM deliveries WHERE order_id=? AND id<>?',(delivery['order_id'],delivery['id'])).fetchone()[0]
+                if units+other>ordered:raise ValueError('Corrected delivery exceeds the order quantity.')
+            self.db.execute('UPDATE change_context SET reason=? WHERE id=1',(reason.strip(),))
+            self.db.execute('UPDATE receipts SET units=?,goods=?,freight=? WHERE id=?',(units,goods,freight,receipt_id))
+            if delivery:self.db.execute('UPDATE deliveries SET units=? WHERE id=?',(units,delivery['id']))
+            self.db.execute("UPDATE change_context SET reason='Record saved' WHERE id=1")
