@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from app import App,scroll_target
+from app import App,scroll_target,touchpad_deltas
 
 class View:
     def __init__(self,master=None,limits=(0,1),kind='Frame'):
@@ -49,5 +49,34 @@ class ScrollTests(unittest.TestCase):
         button=View(limits=(.2,.8),kind='TButton');controller=self.controller(button)
         App.scroll_press(controller,SimpleNamespace(x_root=20,y_root=100))
         self.assertIsNone(controller._drag_scroll)
+
+    def test_touchpad_packed_axes_decode_signed_values(self):
+        packed=(((-7)&65535)<<16)|(12&65535)
+        self.assertEqual(touchpad_deltas(packed),(-7,12))
+        self.assertEqual(touchpad_deltas(packed-(1<<32)),(-7,12))
+        self.assertEqual(touchpad_deltas(65535),(0,-1))
+    def test_wheel_follows_actual_pointer_instead_of_focused_entry(self):
+        focus=View(limits=(.2,.8),kind='TEntry');under_pointer=View(limits=(.2,.8),kind='Treeview')
+        controller=self.controller(focus)
+        controller.winfo_pointerxy=lambda:(400,300)
+        controller.winfo_containing=lambda x,y:under_pointer
+        with patch('app.sys.platform','win32'):
+            App.scroll_wheel(controller,SimpleNamespace(delta=-120,state=0,num=None))
+        self.assertEqual(under_pointer.moves,[('y',3)])
+        self.assertEqual(focus.moves,[])
+    def test_touchpad_event_routes_small_deltas_without_mousewheel_event(self):
+        table=View(limits=(.2,.8),kind='Treeview');controller=self.controller(table)
+        controller.nametowidget=lambda path:table
+        packed=(-12)&65535
+        self.assertEqual(App.scroll_touchpad_raw(controller,packed,0,0,0,'.table'),'break')
+        self.assertEqual(table.moves,[])
+        self.assertEqual(App.scroll_touchpad_raw(controller,packed,0,0,0,'.table'),'break')
+        self.assertEqual(table.moves,[('y',1)])
+    def test_shift_touchpad_swaps_to_horizontal_scroll(self):
+        table=View(limits=(.2,.8),kind='Treeview');controller=self.controller(table)
+        controller.nametowidget=lambda path:table
+        packed=(-24)&65535
+        self.assertEqual(App.scroll_touchpad_raw(controller,packed,1,0,0,'.table'),'break')
+        self.assertEqual(table.moves,[('x',1)])
 
 if __name__=='__main__':unittest.main()

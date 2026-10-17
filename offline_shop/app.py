@@ -123,6 +123,13 @@ def scroll_target(widget,axis,motion,parents):
     return None
 
 
+def touchpad_deltas(packed):
+    """Tk TouchpadScroll: signed 16-bit X in high word, Y in low word."""
+    packed=int(packed)&0xffffffff
+    x=(packed>>16)&0xffff;y=packed&0xffff
+    return (x-65536 if x&32768 else x,y-65536 if y&32768 else y)
+
+
 def blend_color(start,end,progress):
     progress=max(0.0,min(1.0,progress))
     values=[round(int(start[i:i+2],16)+(int(end[i:i+2],16)-int(start[i:i+2],16))*progress) for i in (1,3,5)]
@@ -220,7 +227,7 @@ class App(tk.Tk):
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
             button.bind('<Enter>',lambda e,b=button:self.animate_nav(b,'#203f47'))
             button.bind('<Leave>',lambda e,b=button,i=index:self.animate_nav(b,'#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.15  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.16  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -343,6 +350,17 @@ class App(tk.Tk):
         attach(self)
         self.bind_all('<Map>',lambda event:attach(event.widget) if hasattr(event.widget,'bindtags') else None,add='+')
         self.bind_class(tag,'<MouseWheel>',self.scroll_wheel)
+        self.bind_class(tag,'<Shift-MouseWheel>',self.scroll_wheel)
+        # Tk 8.7/9 sends precision two-finger gestures as TouchpadScroll,
+        # not MouseWheel. Raw Tcl substitutions avoid Tkinter Event mapping gaps.
+        callback=self.register(self.scroll_touchpad_raw)
+        script=f'if {{[{callback} %D %s %X %Y %W] eq "break"}} {{break}}'
+        try:
+            self.tk.call('bind',tag,'<TouchpadScroll>',script)
+            self.tk.call('bind',tag,'<Shift-TouchpadScroll>',script)
+        except tk.TclError:pass # Older Tk versions use MouseWheel instead.
+        self.bind_all('<MouseWheel>',self.scroll_wheel,add='+')
+        self.bind_all('<Shift-MouseWheel>',self.scroll_wheel,add='+')
         self.bind_class(tag,'<Button-4>',self.scroll_wheel)
         self.bind_class(tag,'<Button-5>',self.scroll_wheel)
         self.bind_class(tag,'<ButtonPress-1>',self.scroll_press)
@@ -353,8 +371,43 @@ class App(tk.Tk):
         try:return self.winfo_containing(event.x_root,event.y_root) or event.widget
         except (tk.TclError,KeyError):return event.widget
 
+    def wheel_widget(self,event):
+        # A Windows wheel event can be delivered to the focused field while
+        # the pointer is over a different part of the page.
+        try:
+            x,y=self.winfo_pointerxy()
+            widget=self.winfo_containing(x,y)
+            if widget is not None:return widget
+        except (AttributeError,tk.TclError,KeyError):pass
+        return self.scroll_widget(event)
+
+    def scroll_touchpad_raw(self,delta,state,x,y,path):
+        from types import SimpleNamespace
+        try:
+            widget=self.nametowidget(path)
+            event=SimpleNamespace(widget=widget,x_root=int(x),y_root=int(y))
+            widget=App.wheel_widget(self,event)
+            if widget.winfo_class() in ('TCombobox','Entry','TEntry','Scrollbar','TScrollbar'):return ''
+            dx,dy=touchpad_deltas(delta)
+            if int(state)&1:dx,dy=dy,dx
+            handled=False
+            for axis,pixels in [('x',-dx),('y',-dy)]:
+                if pixels and App.precise_scroll(self,widget,axis,pixels):handled=True
+            return 'break' if handled else ''
+        except (ValueError,TypeError,KeyError,tk.TclError):return ''
+
+    def precise_scroll(self,widget,axis,pixels):
+        target=scroll_target(widget,axis,pixels,self._scroll_parents)
+        if target is None:return False
+        divisor=1 if isinstance(target,tk.Canvas) else 24
+        key=(str(target),axis)
+        amount=self._wheel_remainder.get(key,0)+pixels/divisor
+        units=int(amount);self._wheel_remainder[key]=amount-units
+        if units:getattr(target,axis+'view_scroll')(units,'units')
+        return True
+
     def scroll_wheel(self,event):
-        widget=self.scroll_widget(event)
+        widget=App.wheel_widget(self,event)
         if widget.winfo_class() in ('TCombobox','Entry','TEntry','Scrollbar','TScrollbar'):return
         horizontal=bool(event.state & 0x0001)
         axis='x' if horizontal else 'y'

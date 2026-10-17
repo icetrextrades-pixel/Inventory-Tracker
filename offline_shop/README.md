@@ -1,4 +1,4 @@
-# Mutowei Investments v0.15 — three-shop desktop app
+# Mutowei Investments v0.16 — three-shop desktop app
 
 **WhatKind?**
 
@@ -266,3 +266,11 @@ Manual backup, scan-import backup, reports and restore now operate on the select
 **Cloud users must run the refreshed setup SQL once in the same Supabase project:** Online backup → Save Supabase setup SQL, then execute it in SQL Editor. The script keeps the old single-shop backup table and adds a shop-scoped backup table/RPC. No project or auth account change is required. Each account now has one separate latest snapshot per shop, with independent version checks. Shop identity is checked before upload and after download, preventing a Bizzy backup from being restored in Chikofa's section. A signed-in session can be reused when switching, but the shop namespace changes. The previous unassigned cloud snapshot remains preserved and is not automatically copied to any shop. Assign local records first, then upload the selected shop. New SQL/RLS live deployment remains unverified here.
 
 All **53 tests pass**, including isolated reports/data for all three shops, explicit legacy assignment with source preservation/no overwrite, cloud namespace and wrong-shop rejection, and updater backups for every shop. The new shop-switching controls and renamed Windows shortcut still require a Windows interaction check. All costing, package, sales, scanning and period-control features remain available within each shop.
+
+## v0.16 — native precision-touchpad event support
+
+Install through **Update App**. Adds explicit `TouchpadScroll` and `Shift-TouchpadScroll` bindings for newer Tk runtimes. These use a different event from `MouseWheel`, so the former mouse-wheel-only route could leave page canvases unresponsive to two-finger touchpad gestures. Older runtimes that do not recognize the new event keep using the existing MouseWheel path.
+
+The touchpad binding receives raw Tcl event substitutions, decodes the signed horizontal/vertical delta components, routes both axes to the correct viewport and accumulates small movements for line-based tables/text. Page canvases move at pixel resolution. Shift swaps touchpad axes for horizontal scrolling. Wheel events now use the live pointer position, rather than relying on wheel-event root coordinates or the focused widget. App-wide MouseWheel fallback bindings cover newly mapped widgets, while handled events stop before native handlers to avoid duplicate movement. Touchscreen drag handlers and manual scrollbar controls are unchanged.
+
+All 57 tests pass, including signed packed-delta decoding, precision gestures independent of MouseWheel events, pointer-over-table while an entry has focus, small delta accumulation and Shift-horizontal routing. This is a compatibility fix; actual Windows touchpad-driver behaviour still needs testing on the user's hardware. Reference: [Tk TIP 684, Touchpad Scrolling](https://core.tcl-lang.org/tips/doc/main/tip/684.md).
