@@ -41,11 +41,24 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title('Family Shop | Offline stock & accounts')
-        self.geometry('1180x760')
+        self.geometry('1280x850')
+        self.minsize(1060,720)
+        self.apply_theme()
         self.ledger = Ledger(DATA / 'shop.sqlite3')
-        ttk.Label(self, text='FAMILY SHOP  •  v0.4', font=('Segoe UI', 24, 'bold')).pack(anchor='w', padx=24, pady=(20,4))
-        ttk.Label(self, text='Stock • Receivings • Cash balance • Income statement | All records stay on this computer').pack(anchor='w',padx=24)
-        bar=ttk.Frame(self); bar.pack(fill='x',padx=24,pady=14)
+        sidebar=tk.Frame(self,bg='#142d32',width=196)
+        sidebar.pack(side='left',fill='y');sidebar.pack_propagate(False)
+        tk.Label(sidebar,text='FAMILY\nSHOP',font=('Segoe UI',24,'bold'),bg='#142d32',fg='#ffffff',justify='left').pack(anchor='w',padx=24,pady=(30,4))
+        tk.Label(sidebar,text='YOUR DAILY BUSINESS',font=('Segoe UI',8,'bold'),bg='#142d32',fg='#8cb9b6').pack(anchor='w',padx=24,pady=(0,32))
+        self.nav_buttons=[]
+        for index,label in enumerate(['Overview','Stock & reports','Daily registers','Orders & credit']):
+            button=tk.Button(sidebar,text=label,anchor='w',font=('Segoe UI',11),bg='#142d32',fg='#c9dcdd',activebackground='#23545a',activeforeground='white',relief='flat',borderwidth=0,padx=22,pady=14,cursor='hand2',command=lambda i=index:self.navigate(i))
+            button.pack(fill='x',padx=10,pady=3);self.nav_buttons.append(button)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.5  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
+        header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
+        self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
+        ttk.Label(header,text='A clear view of your stock, money and customers.',style='Muted.TLabel').pack(anchor='w',pady=(4,0))
+        bar=ttk.Frame(workspace); bar.pack(fill='x',pady=(0,18))
         ttk.Label(bar,text='Reporting period:').pack(side='left')
         self.period=ttk.Combobox(bar,state='readonly',width=34); self.period.pack(side='left',padx=8)
         self.period.bind('<<ComboboxSelected>>',lambda e:self.refresh())
@@ -53,16 +66,27 @@ class App(tk.Tk):
         self.update_button=ttk.Button(bar,text='Update App',command=self.check_update)
         self.update_button.pack(side='right',padx=8)
         ttk.Button(bar,text='Backup database',command=self.backup).pack(side='right')
-        self.tabs=ttk.Notebook(self); self.tabs.pack(expand=True,fill='both',padx=24,pady=8)
-        actions=ttk.Frame(self.tabs,padding=20); self.tabs.add(actions,text='Enter records')
-        for label,action,helptext in [
-            ('1. Add product',self.product,'Give each product a name and unit, such as bottle, packet or individual sweet.'),
-            ('2. Record goods received',self.receipt,'Enter supplier, invoice, individual units, goods cost and delivery cost. Each entry is a received order line.'),
-            ('3. Enter / update stock count',self.stock,'Opening + receipts − closing − drawings − broken units = stock-implied units sold.'),
-            ('4. Enter / update daily money',self.cash,'Cash handed over, EcoCash, unpaid credit and cash paid out from sales. A date is saved once and can be updated.')]:
-            ttk.Button(actions,text=label,command=action,width=34).pack(anchor='w',pady=(14,4))
-            ttk.Label(actions,text=helptext,wraplength=950).pack(anchor='w')
-        ttk.Label(actions,text='One currency per database (default USD). Enter whole individual units. Complete every product count for a reliable report.\nCash paid out includes expenses/purchases paid from sales cash; record operating expenses separately for profit.\nCredit repayments, float, capital and transfers must not be entered as new sales receipts.',wraplength=950).pack(anchor='w',pady=30)
+        self.tabs=ttk.Notebook(workspace,style='Workspace.TNotebook'); self.tabs.pack(expand=True,fill='both')
+        actions=ttk.Frame(self.tabs); self.tabs.add(actions,text='Overview')
+        metrics=ttk.Frame(actions);metrics.pack(fill='x',pady=(0,18))
+        self.metric_values={}
+        for column,(key,label) in enumerate([('Stock-implied sales','ESTIMATED SALES'),('Net profit before tax (stock-implied)','PROVISIONAL PROFIT'),('Unreconciled difference (positive = short)','UNEXPLAINED DIFFERENCE')]):
+            card=ttk.Frame(metrics,style='Card.TFrame',padding=16);card.grid(row=0,column=column,sticky='nsew',padx=(0,10 if column<2 else 0));metrics.columnconfigure(column,weight=1)
+            ttk.Label(card,text=label,style='CardCaption.TLabel').pack(anchor='w')
+            value=ttk.Label(card,text='—',style='Metric.TLabel');value.pack(anchor='w',pady=(8,0));self.metric_values[key]=value
+        ttk.Label(actions,text='Daily essentials',style='Section.TLabel').pack(anchor='w',pady=(4,12))
+        cards=ttk.Frame(actions);cards.pack(fill='x')
+        for i,(title,detail,button,command) in enumerate([
+            ('Products','Set up products and the units you count.','Add product',self.product),
+            ('Goods received','Record supplier deliveries and purchase costs.','Record delivery',self.receipt),
+            ('Stock counts','Enter opening, closing, drawings and breakages.','Update stock',self.stock),
+            ('Daily money','Balance cash, EcoCash, credit and cash paid out.','Enter daily money',self.cash)]):
+            card=ttk.Frame(cards,style='Card.TFrame',padding=20);card.grid(row=i//2,column=i%2,sticky='nsew',padx=(0,12 if i%2==0 else 0),pady=(0,12));cards.columnconfigure(i%2,weight=1)
+            ttk.Label(card,text=title,style='CardTitle.TLabel').pack(anchor='w')
+            ttk.Label(card,text=detail,style='CardBody.TLabel',wraplength=310).pack(anchor='w',pady=(8,18))
+            ttk.Button(card,text=button,command=command,style='Accent.TButton').pack(anchor='w')
+        ttk.Label(actions,text='Keep your numbers reliable',style='Section.TLabel').pack(anchor='w',pady=(10,8))
+        ttk.Label(actions,text='Count individual units and include purchase costs. Profit stays provisional until stock and money agree.\nKeep old debt collections separate from new sales. Back up your records regularly.',style='Muted.TLabel',wraplength=780).pack(anchor='w')
         report=ttk.Frame(self.tabs); self.tabs.add(report,text='Stock sheet & income statement')
         top=ttk.Frame(report);top.pack(fill='x',pady=8)
         ttk.Button(top,text='Refresh report',command=self.refresh).pack(side='left')
@@ -76,15 +100,47 @@ class App(tk.Tk):
         self.tree.column('Details',width=150)
         scroll=ttk.Scrollbar(report,orient='horizontal',command=self.tree.xview);self.tree.configure(xscrollcommand=scroll.set)
         self.tree.pack(fill='both',expand=True);scroll.pack(fill='x')
-        self.summary=tk.Text(report,height=15,font=('Consolas',11),state='disabled');self.summary.pack(fill='both',expand=True,pady=8)
+        self.summary=tk.Text(report,height=12,font=('Consolas',10),state='disabled',bg='#ffffff',fg='#244047',relief='flat',padx=16,pady=14,highlightthickness=1,highlightbackground='#dde6e6');self.summary.pack(fill='both',expand=True,pady=8)
         self.log=ttk.Frame(self.tabs); self.tabs.add(self.log,text='Received orders & daily money')
         ttk.Label(self.log,text='Goods received — selected period').pack(anchor='w',pady=6)
         self.receipt_table=self.register_table(self.log,['Date','Product','Supplier','Invoice','Units','Goods USD','Delivery USD'])
         ttk.Label(self.log,text='Daily money — selected period').pack(anchor='w',pady=6)
         self.cash_table=self.register_table(self.log,['Date','Cash USD','EcoCash USD','Credit USD','Paid out USD','Expenses USD','Notes'])
-        ttk.Label(self,text=f'Data: {DATA} | Back up regularly. No cloud sync or internet connection required.').pack(anchor='w',padx=24,pady=8)
+        ttk.Label(workspace,text='Saved on this computer  •  USD  •  Back up regularly',style='Muted.TLabel').pack(anchor='w',pady=(12,0))
         self.build_operations()
         self.reload_periods()
+        self.navigate(0)
+
+    def apply_theme(self):
+        self.configure(bg='#f2f6f6')
+        self.option_add('*Font',('Segoe UI',10))
+        style=ttk.Style(self);style.theme_use('clam')
+        style.configure('.',font=('Segoe UI',10),background='#f2f6f6',foreground='#193b41')
+        style.configure('TFrame',background='#f2f6f6')
+        style.configure('TLabel',background='#f2f6f6',foreground='#193b41')
+        style.configure('Title.TLabel',font=('Segoe UI',23,'bold'))
+        style.configure('Section.TLabel',font=('Segoe UI',13,'bold'))
+        style.configure('Muted.TLabel',foreground='#627c80',font=('Segoe UI',10))
+        style.configure('Card.TFrame',background='white',relief='flat')
+        for name,font,color in [('CardCaption.TLabel',('Segoe UI',8,'bold'),'#627c80'),('Metric.TLabel',('Segoe UI',21,'bold'),'#176c60'),('CardTitle.TLabel',('Segoe UI',14,'bold'),'#193b41'),('CardBody.TLabel',('Segoe UI',10),'#627c80')]:
+            style.configure(name,background='white',font=font,foreground=color)
+        style.configure('TButton',padding=(12,9),background='#e2eeee',foreground='#23494c',borderwidth=0)
+        style.map('TButton',background=[('active','#d0e5e1'),('disabled','#edf1f1')])
+        style.configure('Accent.TButton',background='#167565',foreground='white',padding=(16,10))
+        style.map('Accent.TButton',background=[('active','#105f52')],foreground=[('active','white')])
+        style.configure('TEntry',fieldbackground='white',padding=7)
+        style.configure('TCombobox',fieldbackground='white',padding=7)
+        style.configure('Treeview',background='white',fieldbackground='white',foreground='#25464b',rowheight=32,borderwidth=0)
+        style.configure('Treeview.Heading',background='#e4eeee',foreground='#385c61',padding=(8,10),font=('Segoe UI',9,'bold'),relief='flat')
+        style.map('Treeview',background=[('selected','#d0eae2')],foreground=[('selected','#124b40')])
+        style.configure('Workspace.TNotebook',background='#f2f6f6',borderwidth=0,tabmargins=0)
+        style.layout('Workspace.TNotebook.Tab',[])
+
+    def navigate(self,index):
+        self.tabs.select(index)
+        self.page_title.configure(text=['Your shop, at a glance','Stock & financial reports','Daily registers','Orders & customer credit'][index])
+        for i,button in enumerate(self.nav_buttons):
+            button.configure(bg='#23545a' if i==index else '#142d32',fg='white' if i==index else '#c9dcdd')
 
     def reload_periods(self):
         self.periods={f"{r['start']} to {r['end']}":r['id'] for r in self.ledger.db.execute('SELECT * FROM periods ORDER BY start DESC')}
@@ -97,7 +153,9 @@ class App(tk.Tk):
         return self.periods[self.period.get()]
 
     def form(self,title,fields,save,loader=None):
-        win=tk.Toplevel(self);win.title(title);win.transient(self);win.grab_set()
+        win=tk.Toplevel(self);win.title(title);win.transient(self);win.grab_set();win.configure(bg='#f2f6f6')
+        win.resizable(False,False)
+        win.geometry(f'+{self.winfo_rootx()+220}+{self.winfo_rooty()+100}')
         values={}
         for i,(label,default,choices) in enumerate(fields):
             ttk.Label(win,text=label).grid(row=i,column=0,sticky='w',padx=16,pady=6)
@@ -114,7 +172,7 @@ class App(tk.Tk):
         def submit():
             try:save({k:v.get() for k,v in values.items()});win.destroy();self.refresh()
             except Exception as e:messagebox.showerror('Please check',str(e),parent=win)
-        ttk.Button(win,text='Save record',command=submit).grid(row=len(fields),column=1,sticky='e',padx=16,pady=16)
+        ttk.Button(win,text='Save record',command=submit,style='Accent.TButton').grid(row=len(fields),column=1,sticky='e',padx=16,pady=16)
 
     def product(self):
         self.form('Add product',[('Product name','',None),('Unit','each',None)],lambda v:self.ledger.product(v['Product name'],v['Unit']))
@@ -153,6 +211,11 @@ class App(tk.Tk):
             warnings=self.ledger.checks(p)
             if warnings:text+='\n\nCHECKS REQUIRING ATTENTION\n'+'\n'.join(warnings)
         except ValueError as e:text=str(e)
+        try:
+            _,metrics=self.ledger.report(self.pid())
+            for key,label in self.metric_values.items():label.configure(text='$ '+metrics[key])
+        except ValueError:
+            for label in self.metric_values.values():label.configure(text='—')
         self.refresh_registers()
         self.refresh_operations()
         self.summary.configure(state='normal');self.summary.delete('1.0','end');self.summary.insert('end',text);self.summary.configure(state='disabled')
@@ -182,10 +245,11 @@ class App(tk.Tk):
 
     def build_operations(self):
         frame=ttk.Frame(self.tabs,padding=16);self.tabs.add(frame,text='Orders & customer credit')
-        for label,command in [('Create purchase order',self.new_order),('Receive order / partial delivery',self.deliver),('Record customer credit sale',self.new_debt),('Record debt repayment',self.repayment),('Bring forward previous closing stock',self.carry)]:
-            ttk.Button(frame,text=label,command=command).pack(anchor='w',pady=4)
+        toolbar=ttk.Frame(frame);toolbar.pack(fill='x',pady=(0,8))
+        for i,(label,command) in enumerate([('Create purchase order',self.new_order),('Receive order / partial delivery',self.deliver),('Record customer credit sale',self.new_debt),('Record debt repayment',self.repayment),('Bring forward previous closing stock',self.carry)]):
+            ttk.Button(toolbar,text=label,command=command).grid(row=i//3,column=i%3,sticky='w',padx=(0,8),pady=4)
         ttk.Label(frame,text='Customer credit is a separate supporting register: enter the period’s unpaid sales in Daily money too.\nRepayments reduce customer debt only; exclude old debt collections from daily sales cash/EcoCash.\nCarry-forward starts closing quantities equal to opening: update actual closing counts before reporting.',wraplength=950).pack(anchor='w',pady=12)
-        self.operations=tk.Text(frame,height=9,font=('Consolas',10),wrap='none');self.operations.pack(expand=True,fill='both')
+        self.operations=tk.Text(frame,height=7,font=('Consolas',10),wrap='none',bg='#ffffff',fg='#244047',relief='flat',padx=12,pady=12);self.operations.pack(expand=True,fill='both')
         ttk.Label(frame,text='Customer balances — all recorded dates').pack(anchor='w',pady=6)
         self.customer_table=self.register_table(frame,['Customer','Credit sales USD','Repaid USD','Balance USD'])
 

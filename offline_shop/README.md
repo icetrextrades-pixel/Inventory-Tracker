@@ -1,4 +1,4 @@
-# Family Shop v0.4 — offline desktop edition
+# Family Shop v0.5 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -92,3 +92,9 @@ Click **Update App** in your installed app; no ZIP download is needed. This upda
 - Generated reports remain in the data folder's `reports` subfolder. They contain business information; remove old reports manually when no longer needed.
 
 Validation: 13 tests pass. The Windows tables and browser print layout still require checking on your PC.
+
+## v0.5 — refreshed desktop layout
+
+Use **Update App** to install. No new dependencies or database changes.
+
+The new layout includes a dark teal navigation sidebar, a light workspace, summary cards for stock-implied sales, provisional profit and unexplained differences, a two-column grid of daily actions, more consistent typography, roomier tables and styled entry forms. Navigate with Overview, Stock & reports, Daily registers and Orders & credit. The minimum window size is 1060 × 720; the default is 1280 × 850. Large Windows display scaling can reduce available space; maximize the window if needed. Figures retain the existing accounting rules and remain provisional. All 13 calculation/report/updater tests pass; the refreshed desktop appearance still needs a Windows screen check.
