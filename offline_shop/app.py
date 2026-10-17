@@ -1,6 +1,10 @@
 """Family Shop — local desktop application, Python standard library only."""
 import csv
 import os
+import subprocess
+import sys
+import threading
+import queue
 from pathlib import Path
 from datetime import date
 import tkinter as tk
@@ -17,13 +21,15 @@ class App(tk.Tk):
         self.title('Family Shop | Offline stock & accounts')
         self.geometry('1180x760')
         self.ledger = Ledger(DATA / 'shop.sqlite3')
-        ttk.Label(self, text='FAMILY SHOP  •  v0.2', font=('Segoe UI', 24, 'bold')).pack(anchor='w', padx=24, pady=(20,4))
+        ttk.Label(self, text='FAMILY SHOP  •  v0.3', font=('Segoe UI', 24, 'bold')).pack(anchor='w', padx=24, pady=(20,4))
         ttk.Label(self, text='Stock • Receivings • Cash balance • Income statement | All records stay on this computer').pack(anchor='w',padx=24)
         bar=ttk.Frame(self); bar.pack(fill='x',padx=24,pady=14)
         ttk.Label(bar,text='Reporting period:').pack(side='left')
         self.period=ttk.Combobox(bar,state='readonly',width=34); self.period.pack(side='left',padx=8)
         self.period.bind('<<ComboboxSelected>>',lambda e:self.refresh())
         ttk.Button(bar,text='New period',command=self.new_period).pack(side='left')
+        self.update_button=ttk.Button(bar,text='Update App',command=self.check_update)
+        self.update_button.pack(side='right',padx=8)
         ttk.Button(bar,text='Backup database',command=self.backup).pack(side='right')
         self.tabs=ttk.Notebook(self); self.tabs.pack(expand=True,fill='both',padx=24,pady=8)
         actions=ttk.Frame(self.tabs,padding=20); self.tabs.add(actions,text='Enter records')
@@ -204,6 +210,33 @@ class App(tk.Tk):
             start,end=self.ledger.carry_forward(p);self.refresh()
             messagebox.showinfo('Stock brought forward',f'Copied closing stock from {start} to {end}. Update actual closing quantities before reporting.')
         except Exception as e:messagebox.showerror('Please check',str(e))
+
+    def check_update(self):
+        self.update_button.configure(state='disabled',text='Checking…')
+        results=queue.Queue()
+        def worker():
+            try:
+                from updater import remote_version
+                results.put((True,remote_version()))
+            except Exception as exc:results.put((False,str(exc)))
+        threading.Thread(target=worker,daemon=True).start()
+        def poll():
+            try:ok,result=results.get_nowait()
+            except queue.Empty:self.after(150,poll);return
+            self.update_button.configure(state='normal',text='Update App')
+            if not ok:
+                messagebox.showerror('Could not check updates',f'{result}\nConnect to the internet and try again.');return
+            root=Path(__file__).resolve().parent
+            version=root/'installed-version.txt'
+            if version.exists() and version.read_text().strip()==result:
+                messagebox.showinfo('Up to date','You already have the latest version.');return
+            if not messagebox.askyesno('Install update','Download the latest Family Shop version? Your records will be backed up and the app will restart. Close other Family Shop windows first.'):
+                return
+            try:
+                subprocess.Popen([sys.executable,str(root/'updater.py'),result],cwd=root)
+                self.ledger.db.close();self.destroy()
+            except Exception as exc:messagebox.showerror('Update could not start',str(exc))
+        self.after(150,poll)
 
     def backup(self):
         target=filedialog.asksaveasfilename(defaultextension='.sqlite3',initialfile=f'shop-backup-{date.today()}.sqlite3')

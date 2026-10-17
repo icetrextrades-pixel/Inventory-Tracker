@@ -4,3 +4,7 @@ __pycache__/
 *.sqlite3-*
 *.db
 *.csv
+installed-version.txt
+.update-lock
+.shop-update-*/
+update-recovery/

@@ -1,4 +1,4 @@
-# Family Shop v0.2 — offline desktop edition
+# Family Shop v0.3 — offline desktop edition
 
 A first working desktop version for a family tuckshop. No subscriptions, server, browser, API keys or pip packages. Requires Python 3 with Tkinter (included in the standard Windows installer). This folder runs independently of the existing Streamlit app.
 
@@ -63,3 +63,19 @@ Run `python -m unittest -v` from this folder. Tests cover weighted costs, delive
 - **Editing:** stock forms preload the selected product's saved count. Daily-money forms preload when you enter the date. Check all fields before saving. Receipts, purchase orders, deliveries and debt entries are append-only in this version; corrections/reversals and audit history are planned.
 
 Validation now includes nine tests: partial deliveries and overdelivery rejection, debt overpayment prevention and separation from sales, carry-forward/no overwrite, and upgrading an existing database with backup, in addition to the original reconciliation and costing checks. Desktop interaction for v0.2 still needs a check on Windows.
+
+## v0.3 — desktop shortcut and in-app updates
+
+One final manual installation is needed because older versions have no updater:
+
+1. Back up your database and close Family Shop.
+2. Download the `family-shop-offline` branch once and extract it into a permanent folder, for example `Documents\FamilyShopApp`. Keep that folder in place.
+3. Open `offline_shop` and double-click `setup_shortcut.vbs`. This creates a **Family Shop** desktop shortcut pointing to this folder. If Windows blocks scripts, manually create a desktop shortcut to `start_shop.bat` instead.
+4. Launch Family Shop from that shortcut. Your existing database is reused.
+5. For future versions, connect to the internet and click **Update App**. The app checks GitHub in the background. Confirm the update, then let it finish and reopen. Close other copies of the app first. Downloading ZIPs is no longer needed for normal updates.
+
+The updater follows this repository's `family-shop-offline` branch. Only run updates from the trusted project. Each update pins a commit, verifies Git blob hashes and Python syntax, downloads the complete allowlisted program files, creates a timestamped SQLite backup in the data folder and replaces program files. If file replacement raises an error, old program files are restored. Copies of previous program files are kept in `offline_shop/update-recovery`; record backups are in the data folder. A failure after an interrupted process or power outage may require manually restoring these copies. Updates require a writable app folder and internet access to api.github.com and raw.githubusercontent.com. Normal shop work remains offline.
+
+The app closes during installation and reopens afterward. Your database is stored separately and is never overwritten by the downloaded code files. The first update check after the manual setup may reinstall the current version once to establish the installed commit marker. Later checks identify an already installed version. The updater does not install Python or new third-party dependencies. Future versions requiring such changes will need separate instructions.
+
+Verification: all 11 tests pass, including download pinning/hash validation, update rollback and preserving database bytes. Windows shortcut creation and the live download/restart flow require validation on your PC.
