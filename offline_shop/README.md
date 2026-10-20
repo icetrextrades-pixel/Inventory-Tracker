@@ -1,4 +1,4 @@
-# Mutowei Investments v0.17 — three-shop desktop app
+# Mutowei Investments v0.18 — three-shop desktop app
 
 **WhatKind?**
 
@@ -300,3 +300,22 @@ Password, reserved-key and answer verification use independent random salts and 
 Credentials/logs are in the local `security/owner.sqlite3`, outside all three shop databases. **Shop cloud uploads, scan imports and normal shop backups do not include credentials or private login logs.** Future updates make a separate security backup inside the same security folder; keep it private. POSIX permissions are restricted where supported; on Windows protection depends on the Windows profile/file permissions. The app does not change Windows ACLs or encrypt either database. Someone who controls your Windows account, filesystem or Python source can read financial files or bypass/reset this local UI gate. This is owner access control inside the app, not disk encryption or tamper-resistant identity/security monitoring. Do not delete the security folder as a routine recovery step; use the recovery methods.
 
 All **69 automated tests pass**, including salted hashing, revoked sessions, three-failure alerts, persistent lockout, cycling names, backup-key replacement, question recovery, admin reauthentication, verified-email identity binding, single-use/expired recovery proof and OTP payload validation. GUI login/lock/recovery interactions and actual email delivery require verification on Windows. References: [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html), [Supabase email OTP](https://supabase.com/docs/guides/auth/auth-email-passwordless).
+
+
+## v0.18 — Guided closing
+
+Use **Update App** to install, then select the shop and reporting period. Choose **Guided closing — stock, money & review** on Overview, or **Start guided closing** under Daily registers.
+
+1. **Count stock.** Review every product in individual units: opening stock, closing stock, drawings, breakages, opening cost and selling price. Deliveries already entered in the selected period appear as received units. An optional exact sales total preserves mixed-price sales. Confirm each product, including zero stock.
+2. **Record daily money.** Review cash handed over, EcoCash sales receipts, unpaid customer sales, money paid out from sales cash, expenses and notes for each date. Confirm days with no sales too. Credit here means customer credit sales; there are no credit purchases.
+3. **Review and save.** Inspect inferred units sold, expected sales, money by date, the income statement, warnings and the shortage or surplus. Tick the review confirmation. Optionally lock the period. Save backs up the selected shop and writes stock and cash together in one transaction; a validation error leaves both unchanged.
+
+For daily closing, create/select a one-day reporting period. For an existing weekly period, the same guide uses opening/closing stock for the entire week and money separately for each date. It does not invent daily sales or daily stock movements from weekly totals. Existing period overlap rules still apply.
+
+Before starting, enter all deliveries. For a new period, use **Orders & credit → Bring forward previous closing stock** if applicable; this preserves FIFO layers and weighted-average costs. Review the opening quantities rather than assuming the zero defaults are correct. Cancelling the guide discards the draft; no stock or cash records are written until Save. Existing exact sales totals and costing methods are preserved unless changed. Every product and date must be explicitly confirmed on each visit. Saving again replaces matching stock/date records; it does not add duplicates.
+
+**Reconciliation:** expected stock-implied sales − (cash handed over + EcoCash sales receipts + unpaid customer credit sales + cash paid out from sales) = difference. A positive difference is a shortage; a negative difference is a surplus. Exclude the opening float and old customer debt collections from current sales cash/EcoCash. If operating expenses were paid from sales cash, include the payment under cash paid out as well as operating expenses: cash paid out reconciles the missing physical cash, while operating expenses reduce profit. Do not add the expense a second time to the money accounted for.
+
+A balanced closing does not prove that every entry is accurate. Differences are not automatically recorded as losses, expenses or theft. Warnings about missing costs and FIFO allocation still appear; profit remains provisional. Locked periods can be reopened with a reason in **History & controls**. The guide uses the existing print/PDF report and local/cloud backups; no extra packages or SQL changes are required.
+
+Validation: 77 automated tests pass, including read-only previews, atomic rollback on a later invalid entry, full product/date confirmations, repeat saves without double counting, exact sales totals, FIFO carry-forward layers, shortage/surplus signs, and period locks. Windows layout and device interaction still require confirmation on the owner's PC.

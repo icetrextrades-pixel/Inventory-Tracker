@@ -325,6 +325,155 @@ class OwnerGate:
         return self.session
 
 
+class ClosingGuide:
+    """A modal draft: stock, daily money, then a review before a single save."""
+    def __init__(self,app,period):
+        self.app=app;self.ledger=app.ledger;self.period=period
+        self.stocks,self.days=self.ledger.closing_draft(period)
+        if not self.stocks:raise ValueError('Add products before starting a closing.')
+        self.window=tk.Toplevel(app);self.window.title('Guided closing — '+SHOPS[app.shop_id][0])
+        self.window.geometry('1000x700');self.window.minsize(900,650)
+        self.window.transient(app);self.window.grab_set()
+        self.window.protocol('WM_DELETE_WINDOW',self.cancel)
+        shell=ttk.Frame(self.window,padding=20);shell.pack(fill='both',expand=True)
+        p=self.ledger.db.execute('SELECT * FROM periods WHERE id=?',(period,)).fetchone()
+        ttk.Label(shell,text=SHOPS[app.shop_id][0],style='Section.TLabel').pack(anchor='w')
+        ttk.Label(shell,text=f"Closing: {p['start']} to {p['end']}  •  All money in USD").pack(anchor='w',pady=(4,8))
+        if p['start']!=p['end']:
+            ttk.Label(shell,text='This is a multi-day period: enter stock for the whole period, and money separately for each date.',wraplength=900).pack(anchor='w',pady=(0,8))
+        self.heading=ttk.Label(shell,style='Section.TLabel');self.heading.pack(anchor='w',pady=8)
+        self.body=ttk.Frame(shell);self.body.pack(fill='both',expand=True)
+        footer=ttk.Frame(shell);footer.pack(fill='x',pady=(16,0))
+        ttk.Button(footer,text='Cancel',command=self.cancel).pack(side='left')
+        self.back=ttk.Button(footer,text='Back',command=lambda:self.show(self.step-1));self.back.pack(side='left',padx=8)
+        self.next=ttk.Button(footer,text='Next',command=self.advance,style='Accent.TButton');self.next.pack(side='right')
+        self.step=0;self.current=None;self.values={};self.show(0)
+
+    def cancel(self):
+        if messagebox.askyesno('Discard closing draft?','Discard these unsaved closing entries?',parent=self.window):self.window.destroy()
+
+    def flush(self):
+        if self.current is None:return
+        row=self.items[self.current]
+        changed=False
+        for key,var in self.values.items():
+            value=var.get().strip()
+            if str(row.get(key,''))!=value:changed=True
+            row[key]=value
+        if changed:row['confirmed']=False
+
+    def show(self,step):
+        self.flush()
+        self.step=step;self.current=None;self.values={}
+        for child in self.body.winfo_children():child.destroy()
+        self.heading.configure(text=['1 / 3  •  Count stock','2 / 3  •  Record daily money','3 / 3  •  Review and save'][step])
+        self.back.configure(state='disabled' if step==0 else 'normal')
+        self.next.configure(text='Save closing' if step==2 else 'Next')
+        if step==2:self.review();return
+        self.items=self.stocks if step==0 else self.days
+        left=ttk.Frame(self.body);left.pack(side='left',fill='y',padx=(0,20))
+        self.list=tk.Listbox(left,width=29,height=14,exportselection=False,font=('Segoe UI',11))
+        bar=ttk.Scrollbar(left,command=self.list.yview);self.list.configure(yscrollcommand=bar.set)
+        self.list.pack(side='left',fill='y');bar.pack(side='left',fill='y')
+        self.editor=ttk.Frame(self.body);self.editor.pack(side='left',fill='both',expand=True)
+        self.list.bind('<<ListboxSelect>>',self.select)
+        self.fill_list();self.list.selection_set(0);self.select()
+
+    def fill_list(self):
+        selection=self.current
+        self.list.delete(0,'end')
+        for row in self.items:self.list.insert('end',('✓  ' if row['confirmed'] else '○  ')+(row['name'] if self.step==0 else row['day']))
+        if selection is not None:self.list.selection_set(selection);self.list.see(selection)
+
+    def select(self,event=None):
+        selected=self.list.curselection()
+        if not selected:return
+        self.flush();self.current=selected[0];self.values={}
+        for child in self.editor.winfo_children():child.destroy()
+        row=self.items[self.current]
+        if self.step==0:
+            title=f"{row['name']}  •  {row['unit']}  •  Received: {row['received']} units"
+            help_text='Count individual units. Drawings and broken goods are not sales. Blank exact sales total uses units sold × price.\nOpening quantities must cover this period. Use Carry forward on Orders & credit before starting if needed.'
+            fields=[('opening','Opening units'),('closing','Physical closing units'),('drawings','Drawings units'),('broken','Broken units'),('opening_cost','Opening cost per unit'),('price','Selling price per unit'),('sales_total','Exact sales total (optional)')]
+        else:
+            title=row['day']
+            help_text='Cash = sales cash handed over, excluding the opening float and old debt collections. EcoCash = this period’s sales receipts.\nPaid out = money taken from sales cash, including any expenses paid from it. Enter those expenses again under Operating expenses for profit; they are counted only once in the cash reconciliation. Credit means unpaid customer sales, not purchases.'
+            fields=[('cash','Cash handed over'),('ecocash','EcoCash sales receipts'),('credit','Unpaid credit sales'),('cashout','Cash paid out from sales'),('expense','Operating expenses'),('note','Notes / prepared by')]
+        ttk.Label(self.editor,text=title,style='Section.TLabel',wraplength=570).grid(row=0,column=0,columnspan=2,sticky='w',pady=(0,8))
+        ttk.Label(self.editor,text=help_text,wraplength=570,style='Muted.TLabel').grid(row=1,column=0,columnspan=2,sticky='w',pady=(0,12))
+        for index,(key,label) in enumerate(fields,2):
+            ttk.Label(self.editor,text=label).grid(row=index,column=0,sticky='w',pady=5)
+            var=tk.StringVar(value=row[key]);self.values[key]=var
+            ttk.Entry(self.editor,textvariable=var,width=32).grid(row=index,column=1,sticky='ew',padx=(12,0),pady=5)
+        self.hint=ttk.Label(self.editor,text='',wraplength=570,style='Muted.TLabel')
+        self.hint.grid(row=len(fields)+2,column=0,columnspan=2,sticky='w',pady=8)
+        def hint(*_):
+            try:
+                if self.step==0:
+                    from ledger import quantity,money
+                    units=quantity(self.values['opening'].get())+row['received']-sum(quantity(self.values[k].get()) for k in ('closing','drawings','broken'))
+                    if units<0:raise ValueError('Counts exceed available units.')
+                    amount=money(self.values['sales_total'].get()) if self.values['sales_total'].get().strip() else units*money(self.values['price'].get())
+                    text=f'Units sold (inferred): {units}   •   Expected sales: ${amount/100:.2f}'
+                else:text='Confirm this date even when all amounts are zero.'
+                self.hint.configure(text=text)
+            except Exception as exc:self.hint.configure(text=str(exc))
+        for var in self.values.values():var.trace_add('write',hint)
+        hint()
+        ttk.Button(self.editor,text='Confirm count & next product' if self.step==0 else 'Confirm money & next date',command=self.confirm,style='Accent.TButton').grid(row=len(fields)+3,column=0,columnspan=2,sticky='w',pady=6)
+
+    def confirm(self):
+        try:
+            self.flush();row=self.items[self.current]
+            if self.step==0:
+                self.ledger.stock_preview(self.period,row['product'],*(row[k] for k in ('opening','closing','drawings','broken','opening_cost','price')),sales_total=row['sales_total'] or None)
+            else:
+                from ledger import money
+                for key in ('cash','ecocash','credit','cashout','expense'):money(row[key])
+            row['confirmed']=True;self.fill_list()
+            if self.current+1<len(self.items):
+                self.list.selection_clear(0,'end');self.list.selection_set(self.current+1);self.select()
+            else:self.hint.configure(text='All entries on this step can now be reviewed. Click Next to continue.')
+        except Exception as exc:messagebox.showerror('Check closing entry',str(exc),parent=self.window)
+
+    def advance(self):
+        try:
+            self.app.auth.require(self.app.session)
+            self.flush()
+            if self.step<2:
+                if not all(row['confirmed'] for row in self.items):raise ValueError('Confirm every entry on this step before continuing.')
+                if self.step==1:self.ledger.preview_closing(self.period,self.stocks,self.days)
+                self.show(self.step+1);return
+            if not self.approved.get():raise ValueError('Confirm that you reviewed the stock, money and difference.')
+            # Back up existing records before replacing any period values.
+            from datetime import datetime
+            self.ledger.backup(self.app.shop_data/('before-closing-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.sqlite3'))
+            self.ledger.save_closing(self.period,self.stocks,self.days,self.app.session.name,self.lock.get())
+            self.window.destroy();self.app.refresh();self.app.navigate(1)
+            messagebox.showinfo('Closing saved','Stock and daily money were saved together. View Stock & reports to print or save the report as PDF.',parent=self.app)
+        except Exception as exc:messagebox.showerror('Check closing',str(exc),parent=self.window)
+
+    def review(self):
+        from decimal import Decimal
+        rows,totals,warnings=self.ledger.preview_closing(self.period,self.stocks,self.days)
+        difference=Decimal(totals['Unreconciled difference (positive = short)'])
+        status='BALANCED' if not difference else ('SHORTAGE' if difference>0 else 'SURPLUS')+f'  ${abs(difference):.2f}'
+        ttk.Label(self.body,text=status,style='Section.TLabel').pack(anchor='w',pady=(0,8))
+        frame=ttk.Frame(self.body);frame.pack(fill='both',expand=True)
+        text=tk.Text(frame,wrap='word',font=('Consolas',10),height=10,padx=12,pady=12)
+        bar=ttk.Scrollbar(frame,command=text.yview);text.configure(yscrollcommand=bar.set)
+        text.pack(side='left',fill='both',expand=True);bar.pack(side='right',fill='y')
+        output='STOCK REVIEW\n'+'\n'.join(f'{r[0]}: opening {r[2]}, received {r[3]}, closing {r[5]}, drawings {r[6]}, broken {r[7]}, inferred sold {r[8]}, sales ${r[10]}' for r in rows)
+        output+='\n\nMONEY BY DATE\n'+'\n'.join(f"{r['day']}: cash ${r['cash']}, EcoCash ${r['ecocash']}, credit ${r['credit']}, paid out ${r['cashout']}, expenses ${r['expense']}\n  {r['note']}" for r in self.days)
+        output+='\n\nSTATEMENT\n'+'\n'.join(f'{k}: ${v}' for k,v in totals.items())
+        output+='\n\nExpected sales − (cash handed over + EcoCash + unpaid credit + cash paid out) = difference.\nPositive = shortage; negative = surplus. This does not establish theft. Stock-implied profit stays provisional; a difference is not automatically charged as an expense.'
+        if warnings:output+='\n\nCHECKS\n'+'\n'.join(warnings)
+        text.insert('1.0',output);text.configure(state='disabled')
+        self.approved=tk.BooleanVar(value=False);self.lock=tk.BooleanVar(value=False)
+        ttk.Checkbutton(self.body,text='I reviewed the counts, daily money, warnings and difference.',variable=self.approved).pack(anchor='w',pady=(10,4))
+        ttk.Checkbutton(self.body,text='Lock the period after saving (reopen with a reason in History & controls).',variable=self.lock).pack(anchor='w')
+
+
 class App(tk.Tk):
     def __init__(self,session):
         session.store.require(session)
@@ -365,7 +514,7 @@ class App(tk.Tk):
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
             button.bind('<Enter>',lambda e,b=button:self.animate_nav(b,'#203f47'))
             button.bind('<Leave>',lambda e,b=button,i=index:self.animate_nav(b,'#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.17  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.18  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -401,6 +550,7 @@ class App(tk.Tk):
             ttk.Label(card,text=label,style='CardCaption.TLabel').pack(anchor='w')
             value=ttk.Label(card,text='—',style='Metric.TLabel');value.pack(anchor='w',pady=(8,0));self.metric_values[key]=value
         ttk.Label(actions,text='Daily essentials',style='Section.TLabel').pack(anchor='w',pady=(4,12))
+        ttk.Button(actions,text='Guided closing — stock, money & review',command=self.guided_closing,style='Accent.TButton').pack(anchor='w',pady=(0,16))
         cards=ttk.Frame(actions);cards.pack(fill='x')
         for i,(title,detail,button,command) in enumerate([
             ('Products','Set up products and the units you count.','Add product',self.product),
@@ -433,6 +583,7 @@ class App(tk.Tk):
         self.tree.pack(fill='both',expand=True);scroll.pack(fill='x')
         self.summary=tk.Text(report,height=12,font=('Consolas',10),state='disabled',bg='#ffffff',fg='#244047',relief='flat',padx=16,pady=14,highlightthickness=1,highlightbackground='#dde6e6');self.summary.pack(fill='both',expand=True,pady=8)
         self.log=self.add_scroll_page('Received orders & daily money')
+        ttk.Button(self.log,text='Start guided closing',command=self.guided_closing,style='Accent.TButton').pack(anchor='w',pady=8)
         ttk.Label(self.log,text='Product packaging — all products').pack(anchor='w',pady=6)
         self.packaging_table=self.register_table(self.log,['Product','Individual unit','Package type','Units per package','Default costing'])
         ttk.Label(self.log,text='Goods received — selected period').pack(anchor='w',pady=6)
@@ -933,6 +1084,12 @@ class App(tk.Tk):
             fields=[('Product',next(iter(products)),list(products))]+[(label,'0',None) for label in ['Opening units','Closing units','Drawings units','Broken units','Opening cost per unit']]+[('Costing method','Weighted average',COST_METHODS),('Sales entry method','Selling price per unit',['Selling price per unit','Total sales amount']),('Selling price per unit','0',None),('Total sales amount','0',None)]
             self.form('Stock and automatic sales calculations',fields,save,loader=load,preview=preview)
         except Exception as exc:messagebox.showerror('Stock entry',str(exc))
+
+    def guided_closing(self):
+        try:
+            self.auth.require(self.session)
+            ClosingGuide(self,self.pid())
+        except Exception as exc:messagebox.showerror('Guided closing',str(exc),parent=self)
 
     def cash(self):
         try:p=self.pid()

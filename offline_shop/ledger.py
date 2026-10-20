@@ -1,7 +1,8 @@
 """Offline shop records. Monetary inputs use decimal strings, stored as cents."""
 import sqlite3
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from datetime import date
+from datetime import date, timedelta
+from contextlib import nullcontext
 
 
 def money(value):
@@ -63,7 +64,7 @@ class Ledger:
         if not p or not p['start'] <= day <= p['end']:
             raise ValueError('Date must fall inside the selected period.')
 
-    def stock(self, period, product, opening, closing, drawings, broken, opening_cost, price, sales_total=None, cost_method=None):
+    def stock(self, period, product, opening, closing, drawings, broken, opening_cost, price, sales_total=None, cost_method=None, *, commit=True):
         vals = [quantity(x) for x in (opening, closing, drawings, broken)]
         received = self.db.execute('SELECT COALESCE(SUM(units),0) FROM receipts WHERE period=? AND product=?', (period,product)).fetchone()[0]
         if vals[1]+vals[2]+vals[3] > vals[0]+received:
@@ -77,7 +78,7 @@ class Ledger:
             if not sold and total:raise ValueError('Total sales must be zero when no units were sold.')
             price_cents=int((Decimal(total)/sold).quantize(Decimal('1'),rounding=ROUND_HALF_UP)) if sold else 0
         else:price_cents=money(price)
-        with self.db:
+        with self.db if commit else nullcontext():
             self.db.execute('INSERT INTO stock(period,product,opening,closing,drawings,broken,opening_cost,price) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(period,product) DO UPDATE SET opening=excluded.opening,closing=excluded.closing,drawings=excluded.drawings,broken=excluded.broken,opening_cost=excluded.opening_cost,price=excluded.price', (period,product,*vals,money(opening_cost),price_cents))
             if old and (old['opening']!=vals[0] or old['opening_cost']!=money(opening_cost)):
                 self.db.execute('DELETE FROM opening_layers WHERE period=? AND product=?',(period,product))
@@ -93,11 +94,73 @@ class Ledger:
         with self.db:
             self.db.execute('INSERT INTO receipts(period,product,day,supplier,reference,units,goods,freight) VALUES (?,?,?,?,?,?,?,?)', (period,product,day,supplier,reference,units,money(goods),money(freight)))
 
-    def cash(self, period, day, cash, ecocash, credit, cashout, expense, note):
+    def cash(self, period, day, cash, ecocash, credit, cashout, expense, note, *, commit=True):
         self.check_day(period,day)
         values = [money(x) for x in (cash,ecocash,credit,cashout,expense)]
-        with self.db:
+        with self.db if commit else nullcontext():
             self.db.execute('INSERT INTO cash(period,day,cash,ecocash,credit,cashout,expense,note) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(period,day) DO UPDATE SET cash=excluded.cash,ecocash=excluded.ecocash,credit=excluded.credit,cashout=excluded.cashout,expense=excluded.expense,note=excluded.note', (period,day,*values,note))
+
+    def closing_draft(self, period):
+        """Build an editable guide from saved records; no implicit stock movements."""
+        p=self.db.execute('SELECT * FROM periods WHERE id=?',(period,)).fetchone()
+        if not p:raise ValueError('Select a reporting period first.')
+        if self.period_locked(period):raise ValueError('Reopen this period in History & controls before editing its closing.')
+        stocks=[]
+        for product in self.db.execute('SELECT * FROM products ORDER BY name'):
+            item=product['id']
+            saved=self.db.execute('SELECT * FROM stock WHERE period=? AND product=?',(period,item)).fetchone()
+            total=self.db.execute('SELECT amount FROM stock_sales WHERE period=? AND product=?',(period,item)).fetchone()
+            received=self.db.execute('SELECT COALESCE(SUM(units),0) FROM receipts WHERE period=? AND product=?',(period,item)).fetchone()[0]
+            stocks.append({'product':item,'name':product['name'],'unit':product['unit'],'received':received,
+                **{key:str(saved[key]) if saved else '0' for key in ('opening','closing','drawings','broken')},
+                **{key:f"{saved[key]/100:.2f}" if saved else '0' for key in ('opening_cost','price')},
+                'sales_total':f"{total['amount']/100:.2f}" if total else '',
+                'confirmed':False})
+        days=[];day=date.fromisoformat(p['start']);end=date.fromisoformat(p['end'])
+        while day<=end:
+            text=day.isoformat();saved=self.db.execute('SELECT * FROM cash WHERE period=? AND day=?',(period,text)).fetchone()
+            days.append({'day':text,**{key:f"{saved[key]/100:.2f}" if saved else '0' for key in ('cash','ecocash','credit','cashout','expense')},
+                         'note':saved['note'] if saved else '', 'confirmed':False})
+            day+=timedelta(days=1)
+        return stocks,days
+
+    def _apply_closing(self, period, stocks, days):
+        if self.period_locked(period):raise ValueError('This reporting period is locked.')
+        expected_stocks,expected_days=self.closing_draft(period)
+        if not stocks:raise ValueError('Add at least one product before closing.')
+        if len(stocks)!=len(expected_stocks) or {r['product'] for r in stocks}!={r['product'] for r in expected_stocks}:
+            raise ValueError('Review every product exactly once before saving.')
+        if len(days)!=len(expected_days) or {r['day'] for r in days}!={r['day'] for r in expected_days}:
+            raise ValueError('Review every date in the period exactly once.')
+        for row in stocks:
+            if not row.get('confirmed'):raise ValueError('Confirm the physical count for every product, including zero stock.')
+            self.stock(period,row['product'],*(row[k] for k in ('opening','closing','drawings','broken','opening_cost','price')),
+                       sales_total=row.get('sales_total') or None,commit=False)
+        for row in days:
+            if not row.get('confirmed'):raise ValueError('Confirm the money entries for every date, including days with no sales.')
+            self.cash(period,*(row[k] for k in ('day','cash','ecocash','credit','cashout','expense','note')),commit=False)
+        return self.report(period)
+
+    def preview_closing(self, period, stocks, days):
+        """Use the real accounting engine, rolling back all writes and audit events."""
+        self.db.execute('SAVEPOINT guided_closing')
+        try:
+            rows,totals=self._apply_closing(period,stocks,days)
+            return rows,totals,self.checks(period)
+        finally:
+            self.db.execute('ROLLBACK TO guided_closing')
+            self.db.execute('RELEASE guided_closing')
+
+    def save_closing(self, period, stocks, days, actor, lock=False):
+        if not actor.strip():raise ValueError('The owner name is required.')
+        # One transaction: a failure cannot leave half a closing saved.
+        with self.db:
+            old=self.db.execute('SELECT actor,reason FROM change_context WHERE id=1').fetchone()
+            self.db.execute('UPDATE change_context SET actor=?,reason=? WHERE id=1',(actor.strip(),'Guided closing reviewed and saved'))
+            result=self._apply_closing(period,stocks,days)
+            if lock:self.db.execute('INSERT INTO period_locks(period,reason) VALUES (?,?)',(period,'Guided closing approved by '+actor.strip()))
+            self.db.execute('UPDATE change_context SET actor=?,reason=? WHERE id=1',tuple(old))
+        return result
 
     def report(self, period):
         rows=[]
