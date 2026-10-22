@@ -124,6 +124,38 @@ class Ledger:
             day+=timedelta(days=1)
         return stocks,days
 
+    def save_market_search(self, query, retailer, results):
+        """Append a dated reference snapshot; never writes purchase/stock values."""
+        query=price_query(query)
+        if retailer not in PRICE_RETAILERS:raise ValueError('Choose a retailer.')
+        with self.db:
+            search=self.db.execute('INSERT INTO market_searches(query,retailer) VALUES (?,?)',(query,retailer)).lastrowid
+            for row in results[:30]:
+                source=public_price_url(row['source'])
+                amount=row.get('amount')
+                if amount is not None and (type(amount) is not int or amount<=0):raise ValueError('Invalid reference price.')
+                if row.get('currency','Unknown') not in ('USD','ZWG','ZAR','Unknown','Unknown ($)'):raise ValueError('Invalid reference currency.')
+                units=row.get('units')
+                if units is not None and (type(units) is not int or units<=0):raise ValueError('Pack units must be a positive whole number, or unknown.')
+                if row.get('reviewed') and (amount is None or row.get('currency') not in ('USD','ZWG','ZAR') or not row.get('pack','').strip() or row.get('pack')=='Unknown'):
+                    raise ValueError('Checked references require a price, currency and package description.')
+                self.db.execute('''INSERT INTO market_prices(search,retailer,title,source,excerpt,published,amount,currency,pack,units,reviewed,note)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',(search,row.get('retailer',retailer)[:100],row['title'][:300],source,row.get('excerpt','')[:1500],row.get('published','')[:80],amount,row.get('currency','Unknown'),row.get('pack','Unknown')[:100],row.get('units'),int(bool(row.get('reviewed'))),row.get('note','')[:1000]))
+        return search
+
+    def market_history(self, query='', retailer='All retailers'):
+        import re
+        tokens=re.findall(r'\w+',price_query(query,required=False).casefold())
+        rows=self.db.execute('''SELECT m.*,s.query,s.searched_at FROM market_prices m JOIN market_searches s ON s.id=m.search
+            ORDER BY m.id DESC''')
+        result=[]
+        for row in rows:
+            if retailer!='All retailers' and row['retailer']!=retailer:continue
+            haystack=(row['query']+' '+row['title']).casefold()
+            if all(re.search(r'(?<!\w)'+re.escape(t)+r'(?!\w)',haystack) for t in tokens):result.append(dict(row))
+            if len(result)==300:break
+        return result
+
     def _apply_closing(self, period, stocks, days):
         if self.period_locked(period):raise ValueError('This reporting period is locked.')
         expected_stocks,expected_days=self.closing_draft(period)
@@ -288,6 +320,8 @@ class Ledger:
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), mode TEXT NOT NULL, digest TEXT NOT NULL, source TEXT NOT NULL, UNIQUE(period,mode,digest));
         CREATE TABLE IF NOT EXISTS change_context(id INTEGER PRIMARY KEY CHECK(id=1), actor TEXT, reason TEXT);
         CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')), actor TEXT, reason TEXT, entity TEXT, action TEXT, record_id INTEGER, before_data TEXT, after_data TEXT);
+        CREATE TABLE IF NOT EXISTS market_searches(id INTEGER PRIMARY KEY,query TEXT NOT NULL,retailer TEXT NOT NULL,searched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f','now')));
+        CREATE TABLE IF NOT EXISTS market_prices(id INTEGER PRIMARY KEY,search INTEGER NOT NULL REFERENCES market_searches(id),retailer TEXT,title TEXT NOT NULL,source TEXT NOT NULL,excerpt TEXT,published TEXT,amount INTEGER,currency TEXT,pack TEXT,units INTEGER,reviewed INTEGER NOT NULL DEFAULT 0,note TEXT);
         INSERT OR IGNORE INTO change_context VALUES (1,'Local user','Record saved');
         ''')
         self.db.execute('UPDATE change_context SET actor=? WHERE id=1',(getpass.getuser(),))
@@ -831,3 +865,116 @@ class EmailRecovery:
         user=result.get('user',{})
         if user.get('email','').casefold()!=self.email or not user.get('id'):raise ValueError('Email verification did not match.')
         return user['id']
+
+
+# Price references are independent of the accounting engine.
+PRICE_RETAILERS={
+    'All retailers':'("N Richards" OR "Gain Cash" OR "Metro Hypermarket" OR "Metro Peech")',
+    'N. Richards':'"N Richards"',
+    'Gain Cash & Carry':'"Gain Cash"',
+    'Metro / Peech':'("Metro Hypermarket" OR "Metro Peech")',
+}
+
+
+def price_query(text,required=True):
+    import re
+    text=' '.join(str(text).split())
+    if len(text)>180:raise ValueError('Keep the product search under 180 characters.')
+    # Quantities are optional; retain product sizes such as 2kg or 750ml.
+    text=re.sub(r'^\d+\s+(?:(?:crates?|cases?|boxes?|packs?|units?|bottles?|bags?)\s+(?:of\s+)?)?', '',text,flags=re.I).strip()
+    text=re.sub(r'\b\d+\s+(?:crates?|cases?|boxes?|packs?|units?|bottles?|bags?)\b', '',text,flags=re.I)
+    text=' '.join(text.split())
+    if required and (not text or not any(c.isalpha() for c in text)):raise ValueError('Enter a product name, for example Castle Quart or sugar 2kg.')
+    return text
+
+
+def public_price_url(value):
+    from urllib.parse import urlsplit
+    import ipaddress
+    value=str(value).strip()
+    try:
+        parts=urlsplit(value)
+        if parts.scheme not in ('https','http') or not parts.hostname or parts.username or parts.password or any(c.isspace() for c in value):raise ValueError()
+        host=parts.hostname.casefold()
+        if host=='localhost' or '.' not in host or host.endswith(('.local','.localhost','.internal')):raise ValueError()
+        try:
+            if not ipaddress.ip_address(host).is_global:raise ValueError()
+        except ValueError:
+            # A hostname must not be a disguised numeric/private address.
+            if ':' in host or all(c.isdigit() or c=='.' for c in host):raise ValueError()
+        return value[:2000]
+    except (ValueError,TypeError):raise ValueError('Enter a public http:// or https:// advert/source link.') from None
+
+
+def snippet_price(text):
+    """Only one explicit currency/amount is a candidate, never a verified cost."""
+    import re
+    matches=[]
+    pattern=r'(?<![\w$])(?P<currency>US\$|USD\s*\$?|ZWG\s*\$?|ZiG\s*\$?|ZAR\s*|R\s*|\$)\s*(?P<amount>\d+(?:,\d{3})*(?:\.\d{1,2})?)(?![\d.])'
+    for match in re.finditer(pattern,text,re.I):
+        prefix=match.group('currency').upper().replace(' ','')
+        currency='USD' if prefix.startswith(('US$','USD')) else 'ZWG' if prefix.startswith(('ZWG','ZIG')) else 'ZAR' if prefix.startswith(('ZAR','R')) else 'Unknown ($)'
+        amount=money(match.group('amount').replace(',',''))
+        if amount:matches.append((amount,currency))
+    unique=set(matches)
+    return next(iter(unique)) if len(unique)==1 else (None,'Unknown')
+
+
+class MarketSearch:
+    """Google results via Serper; one explicit click uses one API request."""
+    ENDPOINT='https://google.serper.dev/search'
+
+    @staticmethod
+    def query(product,retailer):
+        if retailer not in PRICE_RETAILERS:raise ValueError('Choose a retailer.')
+        # Quote user words so a product cannot inject search operators.
+        import re
+        terms=' '.join(re.findall(r'[\w.-]+',price_query(product),flags=re.UNICODE))
+        return f'"{terms}" Zimbabwe {PRICE_RETAILERS[retailer]} price specials'
+
+    @classmethod
+    def google_url(cls,product,retailer):
+        from urllib.parse import urlencode
+        return 'https://www.google.com/search?'+urlencode({'q':cls.query(product,retailer)})
+
+    @staticmethod
+    def parse(payload,product,retailer):
+        import re
+        product=price_query(product)
+        terms=re.findall(r'[\w]+',product.casefold())
+        rows=[];seen=set()
+        for item in payload.get('organic',[])[:30]:
+            if not isinstance(item,dict):continue
+            title=str(item.get('title',''));excerpt=str(item.get('snippet',''))
+            text=title+' '+excerpt
+            if not all(re.search(r'(?<!\w)'+re.escape(t)+r'(?!\w)',text.casefold()) for t in terms):continue
+            try:source=public_price_url(item.get('link',''))
+            except ValueError:continue
+            identity=(text+' '+source).casefold()
+            label=('N. Richards' if any(t in identity for t in ('nrichards','n richards','n. richards')) else
+                   'Gain Cash & Carry' if any(t in identity for t in ('gaincash','gain cash','gain.co.zw')) else
+                   'Metro / Peech' if any(t in identity for t in ('metrohypermarket','metro hypermarket','metropeech','metro peech')) else '')
+            if not label or (retailer!='All retailers' and retailer!=label) or source in seen:continue
+            seen.add(source)
+            amount,currency=snippet_price(text)
+            rows.append({'title':title,'source':source,'excerpt':excerpt,'published':str(item.get('date','')),
+                         'amount':amount,'currency':currency,'retailer':label,'pack':'Unknown','units':None,'reviewed':False,
+                         'note':'Google snippet via Serper. Product match, currency, package, branch and advert validity need checking. Search date is not the advert date.'})
+        return rows
+
+    @classmethod
+    def search(cls,product,retailer,key):
+        import json,urllib.request,urllib.error
+        if not key.strip():raise ValueError('Connect a Serper API key for automatic Google results, or use Open Google and save a checked advert manually.')
+        request=urllib.request.Request(cls.ENDPOINT,data=json.dumps({'q':cls.query(product,retailer),'gl':'zw','hl':'en','num':10}).encode(),headers={'X-API-KEY':key.strip(),'Content-Type':'application/json','User-Agent':'MutoweiInvestments/0.19'})
+        try:
+            with urllib.request.urlopen(request,timeout=20) as response:data=response.read(2*1024*1024+1)
+            if len(data)>2*1024*1024:raise ValueError('Search response is too large.')
+            payload=json.loads(data)
+            if not isinstance(payload,dict) or not isinstance(payload.get('organic',[]),list):raise ValueError('Search service returned an unexpected response.')
+            if 'message' in payload and 'organic' not in payload:raise ValueError('Search service did not return results. Check your API account.')
+            return cls.parse(payload,product,retailer)
+        except urllib.error.HTTPError as exc:
+            message={401:'API key was rejected.',403:'API access was denied; check the key and credits.',429:'Search limit reached. Use saved offline results or try later.'}.get(exc.code,f'Search service returned HTTP {exc.code}.')
+            raise ValueError(message) from None
+        except (urllib.error.URLError,TimeoutError,OSError):raise ValueError('Online search could not connect. Your saved offline results remain available.') from None

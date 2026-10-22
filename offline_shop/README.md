@@ -1,4 +1,4 @@
-# Mutowei Investments v0.18 — three-shop desktop app
+# Mutowei Investments v0.19 — three-shop desktop app
 
 **WhatKind?**
 
@@ -319,3 +319,35 @@ Before starting, enter all deliveries. For a new period, use **Orders & credit �
 A balanced closing does not prove that every entry is accurate. Differences are not automatically recorded as losses, expenses or theft. Warnings about missing costs and FIFO allocation still appear; profit remains provisional. Locked periods can be reopened with a reason in **History & controls**. The guide uses the existing print/PDF report and local/cloud backups; no extra packages or SQL changes are required.
 
 Validation: 77 automated tests pass, including read-only previews, atomic rollback on a later invalid entry, full product/date confirmations, repeat saves without double counting, exact sales totals, FIFO carry-forward layers, shortage/surplus signs, and period locks. Windows layout and device interaction still require confirmation on the owner's PC.
+
+
+## v0.19 — Local advertised price finder and offline price history
+
+Open **Overview → Market prices — search & saved offline**. Type a product (for example `Castle Quart` or `sugar 2kg`) and press **Enter** or **Search online**. Quantities are optional: searches such as `2 crates of Castle Quart` or `Castle Quart 2 crates` remove the order quantity while retaining product sizes such as `2kg` and `750ml`. The optional **Units wanted** field calculates a budget from a checked reference with a known number of individual units in the quoted pack.
+
+Retailer filters are **N. Richards**, **Gain Cash & Carry**, **Metro / Peech**, or **All retailers**. Results are leads from indexed adverts or pages, not direct retailer inventory feeds. An indexed mention of a retailer does not authenticate a page. Google cannot reliably extract text inside every Facebook image, PDF or flyer. No numeric price is invented when a source does not expose one.
+
+### Connect automatic Google search
+
+1. Choose **Connect Google search → Open serper.dev**, create a Serper account, and copy its API key.
+2. Choose **Enter API key**, paste it into the masked field, and save. On Windows, **Remember on this Windows account** stores it using Windows DPAPI encryption in the existing private security folder. The key is separate from shop databases and cloud snapshots. On other systems it is retained for the current session only; `SERPER_API_KEY` is also supported.
+3. Search explicitly to fetch Google results through Serper. Each click makes one API request, including All retailers; there are no automatic background searches or purchases of credits. Serper advertises 2,500 free starter queries without a credit card at the time of this release. This is a limited allowance, not a promise of permanently free or monthly searches; check the provider dashboard before using paid credits.
+4. **Disconnect / remove saved key** removes the saved key while preserving offline price history.
+
+Without a key, Enter/Search opens a normal Google search in your default browser. **Open Google** always works this way. You can inspect an advert and choose **Save checked advert / price** to retain it offline. Automatic result import requires a working API key; it cannot use the ChatGPT browser/search connection or a Supabase key.
+
+### Read and check a price
+
+Automatic results keep the source URL, title, short excerpt, currency candidate, any date reported by the search engine, and the retrieval time in UTC. Only a single unambiguous quoted amount is extracted; multiple distinct prices leave the numeric amount unknown. A bare `$` remains **Unknown ($)** rather than being assumed USD. Automatic rows remain **Unreviewed lead**, with package size and individual units unknown.
+
+Select a result and choose **Open selected source**. Before saving a checked reference, verify the exact product/brand, size, package, branch, wholesale/retail basis, currency, VAT, bottle deposits and promotion dates. Enter the priced package and, if known, its number of individual units. This explicit check permits a per-unit and requested-quantity budget. USD, ZWG and ZAR remain separate; no exchange conversion or average across currencies or mismatched packages is made. If the advert date is missing, it stays **Unknown**. A relative date such as “3 days ago” refers to what the search engine returned at the recorded retrieval time. A checked reference can still expire or become out of date.
+
+### Offline availability and accounting treatment
+
+**Saved offline** searches previous snapshots locally without an internet connection or API credits. Product suggestions include prior search terms and existing shop products. Each new search appends history, preserving earlier prices and timestamps; failed and empty searches do not erase prior quotes. Up to 300 matching saved rows are displayed, newest first. Price snapshots are held in separate tables inside the selected shop database, so ordinary local backups, pre-update backups and optional cloud snapshots include them. Other shops have their own history. Opening a source link or performing a fresh web search still needs internet access; the short saved excerpt and checked quote remain available offline, rather than a complete downloaded website or image.
+
+Market references never overwrite receipts, purchase costs, FIFO layers, stock counts, cash entries or profit statements. A current market estimate cannot prove what you paid on a past date. Keep a missing receipt/cost marked for investigation and verify the price before recording a real purchase amount. **Owner checked** means you reviewed an advertised reference, not that a supplier issued an invoice.
+
+Official source starting points: https://nrichards.co.zw/promotions/ ; https://www.facebook.com/nrichardsgroup/ ; https://www.facebook.com/gaincashandcarry/ ; https://www.facebook.com/MetroHypermarketZim/ . Search provider: https://serper.dev/ . Promotional dates, coverage, availability and prices may vary.
+
+Validation: 87 automated tests pass, including optional quantity searches, ambiguous currency and prices, product/retailer filtering, unsafe source rejection, API requests and errors, persistent offline backups/history, isolation between shops, and unchanged accounting reports after price searches. The online API flow uses mocked responses in tests; live automatic search needs the owner's API key. Windows layout and DPAPI key persistence require checking on the owner's PC. No extra Python packages or Supabase changes are needed.

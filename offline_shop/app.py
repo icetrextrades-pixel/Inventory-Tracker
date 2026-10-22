@@ -474,6 +474,206 @@ class ClosingGuide:
         ttk.Checkbutton(self.body,text='Lock the period after saving (reopen with a reason in History & controls).',variable=self.lock).pack(anchor='w')
 
 
+def market_key_bytes(data,encrypt):
+    """Windows DPAPI: saved keys can be decrypted only by this Windows user."""
+    if os.name!='nt':raise ValueError('Persistent search keys require Windows. This session can still use a key.')
+    import ctypes as c
+    from ctypes import wintypes
+    class Blob(c.Structure):_fields_=[('size',wintypes.DWORD),('data',c.POINTER(c.c_ubyte))]
+    buffer=c.create_string_buffer(data);incoming=Blob(len(data),c.cast(buffer,c.POINTER(c.c_ubyte)));outgoing=Blob()
+    function=c.windll.crypt32.CryptProtectData if encrypt else c.windll.crypt32.CryptUnprotectData
+    if not function(c.byref(incoming),None,None,None,None,1,c.byref(outgoing)):raise ValueError('Windows could not protect/read the search key.')
+    try:return c.string_at(outgoing.data,outgoing.size)
+    finally:
+        free=c.windll.kernel32.LocalFree;free.argtypes=[c.c_void_p];free.restype=c.c_void_p
+        free(c.cast(outgoing.data,c.c_void_p))
+
+
+class MarketWindow:
+    def __init__(self,app):
+        from ledger import PRICE_RETAILERS
+        self.app=app;self.ledger=app.ledger;self.busy=False;self.rows={}
+        self.key_path=DATA/'security'/'market-key.dpapi'
+        if not hasattr(app,'market_api_key'):
+            app.market_api_key=os.environ.get('SERPER_API_KEY','')
+            if not app.market_api_key and self.key_path.exists():
+                try:app.market_api_key=market_key_bytes(self.key_path.read_bytes(),False).decode()
+                except (OSError,ValueError,UnicodeError):pass
+        self.window=tk.Toplevel(app);self.window.title('Market price references — '+SHOPS[app.shop_id][0]);self.window.geometry('1100x740');self.window.minsize(930,680)
+        self.window.transient(app);self.window.grab_set()
+        frame=ttk.Frame(self.window,padding=18);frame.pack(fill='both',expand=True)
+        ttk.Label(frame,text='Local price finder',style='Title.TLabel').pack(anchor='w')
+        ttk.Label(frame,text='Advertised estimates • not your confirmed purchase cost • saved separately for '+SHOPS[app.shop_id][0],wraplength=1000).pack(anchor='w',pady=(4,12))
+        controls=ttk.Frame(frame);controls.pack(fill='x')
+        ttk.Label(controls,text='Product').grid(row=0,column=0,sticky='w')
+        history=[r[0] for r in self.ledger.db.execute('SELECT query FROM market_searches GROUP BY query ORDER BY MAX(id) DESC LIMIT 30')]
+        products=[r[0] for r in self.ledger.db.execute('SELECT name FROM products ORDER BY name')]
+        self.query=tk.StringVar();self.retailer=tk.StringVar(value='All retailers');self.wanted=tk.StringVar()
+        self.entry=ttk.Combobox(controls,textvariable=self.query,values=list(dict.fromkeys(history+products)),width=35)
+        self.entry.grid(row=1,column=0,padx=(0,8),sticky='ew');self.entry.bind('<Return>',lambda e:self.search())
+        ttk.Label(controls,text='Retailer').grid(row=0,column=1,sticky='w')
+        ttk.Combobox(controls,textvariable=self.retailer,values=list(PRICE_RETAILERS),state='readonly',width=22).grid(row=1,column=1,padx=(0,8))
+        ttk.Label(controls,text='Units wanted (optional)').grid(row=0,column=2,sticky='w')
+        ttk.Entry(controls,textvariable=self.wanted,width=18).grid(row=1,column=2)
+        actions=ttk.Frame(frame);actions.pack(fill='x',pady=10)
+        self.search_button=ttk.Button(actions,text='Search online / Enter',command=self.search,style='Accent.TButton');self.search_button.pack(side='left')
+        ttk.Button(actions,text='Saved offline',command=self.cached).pack(side='left',padx=6)
+        ttk.Button(actions,text='Open Google',command=self.google).pack(side='left')
+        ttk.Button(actions,text='Connect Google search',command=self.connect).pack(side='right')
+        self.status=ttk.Label(frame,text='',wraplength=1000,style='Muted.TLabel');self.status.pack(anchor='w',pady=(0,8))
+        columns=['Retailer','Quoted price','Currency','Pack / units','Ad date (unverified)','Saved UTC','Status']
+        tableframe=ttk.Frame(frame);tableframe.pack(fill='both',expand=True)
+        self.table=ttk.Treeview(tableframe,columns=columns,show='headings',height=8)
+        for col in columns:self.table.heading(col,text=col);self.table.column(col,width=135,minwidth=90)
+        bar=ttk.Scrollbar(tableframe,orient='vertical',command=self.table.yview);horizontal=ttk.Scrollbar(tableframe,orient='horizontal',command=self.table.xview)
+        self.table.configure(yscrollcommand=bar.set,xscrollcommand=horizontal.set)
+        self.table.grid(row=0,column=0,sticky='nsew');bar.grid(row=0,column=1,sticky='ns');horizontal.grid(row=1,column=0,sticky='ew');tableframe.columnconfigure(0,weight=1);tableframe.rowconfigure(0,weight=1)
+        self.table.bind('<<TreeviewSelect>>',self.details)
+        self.detail=tk.Text(frame,height=7,wrap='word',font=('Segoe UI',10),padx=10,pady=8,state='disabled')
+        self.detail.pack(fill='x',pady=8)
+        footer=ttk.Frame(frame);footer.pack(fill='x')
+        ttk.Button(footer,text='Open selected source',command=self.open_source).pack(side='left')
+        ttk.Button(footer,text='Save checked advert / price',command=self.checked).pack(side='left',padx=8)
+        ttk.Button(footer,text='Close',command=self.window.destroy).pack(side='right')
+        ttk.Label(frame,text='Search snippets may mix products or old offers. Check the brand, size, branch, currency, VAT, deposits and offer dates.\nPrices inside images need manual checking. An unknown ad date does not mean today; a current estimate cannot reconstruct an old invoice.',wraplength=1020,style='Muted.TLabel').pack(anchor='w',pady=(10,0))
+        self.wanted.trace_add('write',lambda *_:self.details());self.cached();self.entry.focus_set()
+
+    def say(self,text):self.status.configure(text=text)
+
+    def cached(self):
+        try:
+            rows=self.ledger.market_history(self.query.get(),self.retailer.get());self.rows={}
+            self.table.delete(*self.table.get_children())
+            for row in rows:
+                key=str(row['id']);self.rows[key]=row
+                amount=f"{row['amount']/100:.2f}" if row['amount'] is not None else 'Not found'
+                self.table.insert('','end',iid=key,values=[row['retailer'],amount,row['currency'],row['pack']+(f" / {row['units']} units" if row['units'] else ''),row['published'] or 'Unknown',row['searched_at'],'Owner checked' if row['reviewed'] else 'Unreviewed lead'])
+            self.say(f'Saved offline: {len(rows)} result(s). '+('Automatic Google search connected.' if self.app.market_api_key else 'Connect a Serper key for automatic results; Open Google works without a key.'))
+            self.details()
+        except Exception as exc:messagebox.showerror('Saved prices',str(exc),parent=self.window)
+
+    def selected(self):
+        selection=self.table.selection();return self.rows.get(selection[0]) if selection else None
+
+    def details(self,event=None):
+        from ledger import quantity
+        from decimal import Decimal
+        row=self.selected();text='Select a result to inspect the source, excerpt and any checked unit estimate.'
+        if row:
+            text=f"{row['title']}\n{row['source']}\n{row['excerpt']}\n{row['note']}\nSaved UTC: {row['searched_at']} • Ad date: {row['published'] or 'Unknown'}"
+            if row['reviewed'] and row['units'] and row['amount'] is not None and row['currency'] in ('USD','ZWG','ZAR'):
+                unit=Decimal(row['amount'])/100/row['units'];text+=f"\nChecked reference per unit: {row['currency']} {unit:.4f}"
+                try:
+                    if self.wanted.get().strip():text+=f" • Estimated total for {quantity(self.wanted.get())} units: {row['currency']} {unit*quantity(self.wanted.get()):.2f} (delivery/deposit differences excluded)."
+                except Exception:text+=' • Enter a whole non-negative quantity.'
+        self.detail.configure(state='normal');self.detail.delete('1.0','end');self.detail.insert('1.0',text);self.detail.configure(state='disabled')
+
+    def google(self):
+        from ledger import MarketSearch
+        import webbrowser
+        try:webbrowser.open(MarketSearch.google_url(self.query.get(),self.retailer.get()))
+        except Exception as exc:messagebox.showerror('Product search',str(exc),parent=self.window)
+
+    def search(self):
+        if self.busy:return
+        from ledger import MarketSearch,price_query
+        try:product=price_query(self.query.get());retailer=self.retailer.get();MarketSearch.query(product,retailer)
+        except ValueError as exc:messagebox.showerror('Product search',str(exc),parent=self.window);return
+        self.cached();key=self.app.market_api_key
+        if not key:
+            self.say('Automatic results need a Serper key. Google opened in your browser; save any checked advert here for offline use.')
+            self.google();return
+        self.busy=True;self.search_button.configure(state='disabled');self.say('Searching Google via Serper… Existing saved results remain below.')
+        results=queue.Queue()
+        def worker():
+            try:results.put((True,MarketSearch.search(product,retailer,key)))
+            except Exception as exc:results.put((False,str(exc)))
+        threading.Thread(target=worker,daemon=True).start()
+        def poll():
+            if not self.window.winfo_exists():return
+            try:ok,result=results.get_nowait()
+            except queue.Empty:self.app.after(150,poll);return
+            self.busy=False;self.search_button.configure(state='normal')
+            if not ok:self.say(result+' Saved results have been kept.');return
+            try:
+                self.app.auth.require(self.app.session)
+                self.ledger.save_market_search(product,retailer,result)
+                self.cached()
+                self.say(f'Saved {len(result)} matching Google lead(s) for {product}. '+('Check dates, currency and package before using any price.' if result else 'No matching indexed advert found. Try a shorter product name, another retailer or Open Google. Old saved results are still available.'))
+            except Exception as exc:self.say('Could not save results: '+str(exc))
+        self.app.after(150,poll)
+
+    def dialog(self,title,fields,save):
+        win=tk.Toplevel(self.window);win.title(title);win.transient(self.window);win.grab_set();variables={}
+        for index,(label,value,choices) in enumerate(fields):
+            ttk.Label(win,text=label).grid(row=index,column=0,sticky='w',padx=14,pady=5)
+            var=tk.StringVar(value=value);variables[label]=var
+            widget=ttk.Combobox(win,textvariable=var,values=choices,state='readonly',width=45) if choices else ttk.Entry(win,textvariable=var,width=48,show='•' if label=='API key' else '')
+            widget.grid(row=index,column=1,padx=14,pady=5)
+        def close():
+            win.destroy()
+            if self.window.winfo_exists():self.window.grab_set()
+        def submit():
+            try:self.app.auth.require(self.app.session);save({k:v.get() for k,v in variables.items()});close()
+            except Exception as exc:messagebox.showerror(title,str(exc),parent=win)
+        ttk.Button(win,text='Save',command=submit,style='Accent.TButton').grid(row=len(fields),column=1,sticky='e',padx=14,pady=14)
+        win.protocol('WM_DELETE_WINDOW',close)
+
+    def connect(self):
+        def save(v):
+            key=v['API key'].strip()
+            if not key:raise ValueError('Paste your Serper API key, or use Disconnect to remove the saved key.')
+            if v['Remember on this Windows account']=='Yes':
+                protected=market_key_bytes(key.encode(),True)
+                self.key_path.parent.mkdir(parents=True,exist_ok=True);self.key_path.write_bytes(protected)
+            else:self.key_path.unlink(missing_ok=True)
+            self.app.market_api_key=key;self.say('Google search configured via Serper. Search online to fetch and save results. Each search uses API credits.')
+        def disconnect():
+            self.app.market_api_key='';self.key_path.unlink(missing_ok=True);self.say('Search key removed. Saved prices remain available offline.')
+        win=tk.Toplevel(self.window);win.title('Connect Google search');win.transient(self.window);win.grab_set()
+        ttk.Label(win,text='Create an account at serper.dev and copy its API key.\nStarter credits are limited; later searches may require paid credits.\nOnly explicit online searches use credits. Offline viewing is free.',padding=16).pack()
+        def close():win.destroy();self.window.grab_set()
+        def paste():
+            close();self.dialog('Serper search key',[('API key','',None),('Remember on this Windows account','Yes' if os.name=='nt' else 'No',['Yes','No'] if os.name=='nt' else ['No'])],save)
+        import webbrowser
+        ttk.Button(win,text='Open serper.dev',command=lambda:webbrowser.open('https://serper.dev/')).pack(pady=5)
+        ttk.Button(win,text='Enter API key',command=paste).pack(pady=5)
+        ttk.Button(win,text='Disconnect / remove saved key',command=lambda:(disconnect(),close())).pack(padx=16,pady=5)
+        ttk.Button(win,text='Close',command=close).pack(pady=10);win.protocol('WM_DELETE_WINDOW',close)
+
+    def open_source(self):
+        from ledger import public_price_url
+        import webbrowser
+        row=self.selected()
+        if row:
+            try:webbrowser.open(public_price_url(row['source']))
+            except ValueError as exc:messagebox.showerror('Source link',str(exc),parent=self.window)
+
+    def checked(self):
+        from ledger import PRICE_RETAILERS,price_query,money,quantity,public_price_url
+        try:product=price_query(self.query.get())
+        except ValueError as exc:messagebox.showerror('Checked price',str(exc),parent=self.window);return
+        row=self.selected() or {}
+        fields=[('Retailer',row.get('retailer',self.retailer.get()) if row.get('retailer',self.retailer.get())!='All retailers' else 'N. Richards',list(PRICE_RETAILERS)[1:]),
+                ('Product / pack description',row.get('title',product),None),('Advertised pack price',f"{row['amount']/100:.2f}" if row.get('amount') is not None else '',None),
+                ('Currency',row.get('currency') if row.get('currency') in ('USD','ZWG','ZAR') else '',['USD','ZWG','ZAR']),
+                ('Package size / variant','',None),('Individual units in priced pack (optional)','',None),
+                ('Advert date / validity (if known)',row.get('published',''),None),('Source advert URL',row.get('source',''),None),
+                ('Branch / VAT / deposit / other notes','',None)]
+        def save(v):
+            amount=money(v['Advertised pack price'])
+            if amount<=0:raise ValueError('Enter a price greater than zero.')
+            if v['Currency'] not in ('USD','ZWG','ZAR'):raise ValueError('Confirm the currency explicitly.')
+            if not v['Product / pack description'].strip() or not v['Package size / variant'].strip():raise ValueError('Describe the exact product, package and size you checked.')
+            units=quantity(v['Individual units in priced pack (optional)']) if v['Individual units in priced pack (optional)'].strip() else None
+            if units==0:raise ValueError('Units in a pack must be greater than zero, or leave unknown.')
+            self.ledger.save_market_search(product,v['Retailer'],[{'retailer':v['Retailer'],'title':v['Product / pack description'],'source':public_price_url(v['Source advert URL']),
+                'excerpt':row.get('excerpt','Manually checked advert'),'published':v['Advert date / validity (if known)'],'amount':amount,'currency':v['Currency'],
+                'pack':v['Package size / variant'],'units':units,'reviewed':True,'note':v['Branch / VAT / deposit / other notes']+' | Owner checked reference only; not a receipt.'}])
+            self.cached()
+        self.dialog('Save checked price reference',fields,save)
+
+
 class App(tk.Tk):
     def __init__(self,session):
         session.store.require(session)
@@ -514,7 +714,7 @@ class App(tk.Tk):
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
             button.bind('<Enter>',lambda e,b=button:self.animate_nav(b,'#203f47'))
             button.bind('<Leave>',lambda e,b=button,i=index:self.animate_nav(b,'#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.18  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.19  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
@@ -550,6 +750,7 @@ class App(tk.Tk):
             ttk.Label(card,text=label,style='CardCaption.TLabel').pack(anchor='w')
             value=ttk.Label(card,text='—',style='Metric.TLabel');value.pack(anchor='w',pady=(8,0));self.metric_values[key]=value
         ttk.Label(actions,text='Daily essentials',style='Section.TLabel').pack(anchor='w',pady=(4,12))
+        ttk.Button(actions,text='Market prices — search & saved offline',command=self.market_prices).pack(anchor='w',pady=(0,10))
         ttk.Button(actions,text='Guided closing — stock, money & review',command=self.guided_closing,style='Accent.TButton').pack(anchor='w',pady=(0,16))
         cards=ttk.Frame(actions);cards.pack(fill='x')
         for i,(title,detail,button,command) in enumerate([
@@ -1084,6 +1285,12 @@ class App(tk.Tk):
             fields=[('Product',next(iter(products)),list(products))]+[(label,'0',None) for label in ['Opening units','Closing units','Drawings units','Broken units','Opening cost per unit']]+[('Costing method','Weighted average',COST_METHODS),('Sales entry method','Selling price per unit',['Selling price per unit','Total sales amount']),('Selling price per unit','0',None),('Total sales amount','0',None)]
             self.form('Stock and automatic sales calculations',fields,save,loader=load,preview=preview)
         except Exception as exc:messagebox.showerror('Stock entry',str(exc))
+
+    def market_prices(self):
+        try:
+            self.auth.require(self.session)
+            MarketWindow(self)
+        except Exception as exc:messagebox.showerror('Market prices',str(exc),parent=self)
 
     def guided_closing(self):
         try:
