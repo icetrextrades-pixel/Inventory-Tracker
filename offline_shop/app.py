@@ -206,6 +206,88 @@ def show_recovery_key(parent,key,on_done=None):
     window.protocol('WM_DELETE_WINDOW',lambda:None)
 
 
+SHOP_COLOURS={
+    'mutowei-bottle-store':('#13796a','#58d7b3','MUTOWEI • BOTTLE STORE'),
+    'bizzy-tuckshop':('#6150b8','#b4a3ff','BIZZY • GROCERY & BEER'),
+    'chikofa-tuckshop':('#a86612','#ffc66d','CHIKOFA • GROCERY & BEER'),
+}
+
+
+def visual_palette(dark=False):
+    return ({'bg':'#111c28','panel':'#1b2a3a','text':'#edf4fa','muted':'#a6bacb','border':'#31465a','input':'#223449','selection':'#35576b','good':'#72dfb2','warning':'#ffd084'} if dark else
+            {'bg':'#f2f6f6','panel':'#ffffff','text':'#193b41','muted':'#526a6e','border':'#dce6e7','input':'#ffffff','selection':'#d0eae2','good':'#176e52','warning':'#926009'})
+
+
+def category_icon(canvas,category,x=0,y=0,color='#13796a'):
+    def line(*coords,**kw):canvas.create_line(*[v+(x if i%2==0 else y) for i,v in enumerate(coords)],fill=color,width=2,**kw)
+    def box(a,b,c,d):canvas.create_rectangle(x+a,y+b,x+c,y+d,outline=color,width=2)
+    if category=='Beer':
+        box(12,4,20,12);box(9,13,23,32);line(9,23,23,23)
+    elif category=='Cigarettes':
+        box(5,9,28,31);line(5,16,28,16);line(10,5,10,9);line(16,5,16,9);line(22,5,22,9)
+    elif category=='Household':
+        line(3,17,16,5,30,17);line(7,15,7,31,26,31,26,15);box(13,22,20,31)
+    elif category=='Grocery':
+        box(5,12,28,31);line(10,12,10,6,23,6,23,12);line(11,21,22,21)
+    else:
+        box(5,8,28,30);line(5,15,28,15);line(16,8,16,30)
+
+
+def product_picture(master,path):
+    import math,tempfile
+    source=Path(path)
+    if source.stat().st_size>12*1024*1024:raise ValueError('Choose a picture smaller than 12 MB.')
+    def encode(filename):
+        picture=tk.PhotoImage(master=master,file=str(filename))
+        picture=picture.subsample(max(1,math.ceil(max(picture.width(),picture.height())/160)))
+        payload=picture.tk.call(str(picture),'data','-format','png')
+        return payload if isinstance(payload,bytes) else payload.encode('latin1')
+    if source.suffix.casefold() in ('.jpg','.jpeg'):
+        if os.name!='nt':raise ValueError('Use PNG or GIF here. JPEG import is available on Windows.')
+        script="""param([string]$Source,[string]$Output)
+Add-Type -AssemblyName System.Drawing
+$image=$null;$thumb=$null;$graphics=$null
+try {
+ $image=[System.Drawing.Image]::FromFile($Source)
+ $scale=[Math]::Min(1.0,160.0/[Math]::Max($image.Width,$image.Height))
+ $thumb=New-Object System.Drawing.Bitmap ([int][Math]::Max(1,$image.Width*$scale)),([int][Math]::Max(1,$image.Height*$scale))
+ $graphics=[System.Drawing.Graphics]::FromImage($thumb)
+ $graphics.DrawImage($image,0,0,$thumb.Width,$thumb.Height)
+ $thumb.Save($Output,[System.Drawing.Imaging.ImageFormat]::Png)
+} finally {
+ if($graphics){$graphics.Dispose()};if($thumb){$thumb.Dispose()};if($image){$image.Dispose()}
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='mutowei-photo-') as folder:
+            script_path=Path(folder)/'resize.ps1';output=Path(folder)/'product.png';script_path.write_text(script)
+            result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(script_path),'-Source',str(source.resolve()),'-Output',str(output)],capture_output=True,timeout=20,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+            if result.returncode or not output.exists():raise ValueError('Windows could not read this JPEG. Try a PNG picture.')
+            return encode(output)
+    return encode(source)
+
+
+def show_brand_splash(parent,image):
+    import json,time
+    try:reduced=bool(json.loads((DATA/'motion-settings.json').read_text()).get('reduce_motion',False))
+    except (OSError,ValueError,AttributeError):reduced=False
+    parent.withdraw();splash=tk.Toplevel(parent);splash.overrideredirect(True);splash.configure(bg='#142d32')
+    width,height=470,330;x=(parent.winfo_screenwidth()-width)//2;y=(parent.winfo_screenheight()-height)//2
+    splash.geometry(f'{width}x{height}+{x}+{y}')
+    tk.Label(splash,image=image,bg='#142d32').pack(pady=(25,5))
+    tk.Label(splash,text='Mutowei Investments',font=('Segoe UI',23,'bold'),bg='#142d32',fg='white').pack()
+    tk.Label(splash,text='WhatKind?  •  Preparing owner access',font=('Segoe UI',11),bg='#142d32',fg='#a6cecb').pack(pady=(10,20))
+    track=tk.Canvas(splash,width=360,height=4,bg='#29474d',highlightthickness=0);track.pack()
+    bar=track.create_rectangle(0,0,0,4,fill='#72dfb2',outline='');started=time.monotonic()
+    def tick():
+        if not parent.winfo_exists():return
+        progress=1 if reduced else min(1,(time.monotonic()-started)/.6)
+        track.coords(bar,0,0,360*progress,4)
+        if progress<1:parent.after(25,tick)
+        else:
+            splash.destroy();parent.deiconify();parent.lift()
+    parent.after(150 if reduced else 25,tick)
+
+
 class OwnerGate:
     def __init__(self,store,parent=None):
         self.store=store;self.session=None;self.parent=parent;self.email_client=None
@@ -221,6 +303,7 @@ class OwnerGate:
         self.window.protocol('WM_DELETE_WINDOW',self.window.destroy)
         self.show_setup() if not self.store.owner() else self.show_login()
         if parent:self.window.grab_set()
+        else:show_brand_splash(self.window,self.image)
     def clear(self,title):
         for child in self.frame.winfo_children():child.destroy()
         ttk.Label(self.frame,text=title,font=('Segoe UI',16,'bold')).pack(anchor='w',pady=(0,12))
@@ -458,7 +541,7 @@ class ClosingGuide:
         rows,totals,warnings=self.ledger.preview_closing(self.period,self.stocks,self.days)
         difference=Decimal(totals['Unreconciled difference (positive = short)'])
         status='BALANCED' if not difference else ('SHORTAGE' if difference>0 else 'SURPLUS')+f'  ${abs(difference):.2f}'
-        ttk.Label(self.body,text=status,style='Section.TLabel').pack(anchor='w',pady=(0,8))
+        ttk.Label(self.body,text=status,style='Warning.TLabel' if difference else 'Good.TLabel').pack(anchor='w',pady=(0,8))
         frame=ttk.Frame(self.body);frame.pack(fill='both',expand=True)
         text=tk.Text(frame,wrap='word',font=('Consolas',10),height=10,padx=12,pady=12)
         bar=ttk.Scrollbar(frame,command=text.yview);text.configure(yscrollcommand=bar.set)
@@ -691,6 +774,7 @@ class App(tk.Tk):
         self._scroll_parents={}
         self._animations={}
         self.reduce_motion=tk.BooleanVar(value=self.load_motion())
+        self.dark_mode=tk.BooleanVar(value=self.load_visual_setting('dark',False))
         self.apply_theme()
         import json
         try:self.shop_id=json.loads((DATA/'business-settings.json').read_text()).get('shop')
@@ -714,12 +798,15 @@ class App(tk.Tk):
             button.pack(fill='x',padx=10,pady=2);self.nav_buttons.append(button)
             button.bind('<Enter>',lambda e,b=button:self.animate_nav(b,'#203f47'))
             button.bind('<Leave>',lambda e,b=button,i=index:self.animate_nav(b,'#28545b' if self.nav_selected==i else '#142d32'))
-        tk.Label(sidebar,text='●  OFFLINE READY\nv0.19  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
+        tk.Label(sidebar,text='●  OFFLINE READY\nv0.20  •  Local records',font=('Segoe UI',10),bg='#142d32',fg='#9fdac5',justify='left').pack(side='bottom',anchor='w',padx=24,pady=26)
         workspace=ttk.Frame(self,padding=(24,20));workspace.pack(side='left',fill='both',expand=True)
         header=ttk.Frame(workspace);header.pack(fill='x',pady=(0,16))
         self.page_title=ttk.Label(header,text='Your shop, at a glance',style='Title.TLabel');self.page_title.pack(anchor='w')
         self.shop_subtitle=ttk.Label(header,text=SHOPS[self.shop_id][0]+'  •  '+SHOPS[self.shop_id][1]+'  •  WhatKind?',style='Muted.TLabel')
         self.shop_subtitle.pack(anchor='w',pady=(4,0))
+        appearance=ttk.Frame(header);appearance.pack(anchor='e')
+        ttk.Checkbutton(appearance,text='Dark mode',variable=self.dark_mode,command=self.toggle_dark).pack(side='left',padx=8)
+        ttk.Checkbutton(appearance,text='Reduce motion',variable=self.reduce_motion,command=self.toggle_motion).pack(side='left')
         self.transition_line=tk.Canvas(header,height=3,bg='#e1ebeb',highlightthickness=0)
         self.transition_line.pack(fill='x',pady=(12,0))
         self.transition_mark=self.transition_line.create_rectangle(0,0,1,3,fill='#54cbb0',outline='')
@@ -766,6 +853,7 @@ class App(tk.Tk):
             ttk.Button(card,text=button,command=command,style='Accent.TButton').pack(anchor='w')
             if i==0:ttk.Button(card,text='Packaging & costing',command=self.edit_packaging).pack(anchor='w',pady=(8,0))
             self.bind_card_animation(card,symbol,i)
+        self.build_visuals(actions)
         ttk.Label(actions,text='Keep your numbers reliable',style='Section.TLabel').pack(anchor='w',pady=(10,8))
         ttk.Label(actions,text='Count individual units and include purchase costs. Profit stays provisional until stock and money agree.\nKeep old debt collections separate from new sales. Back up your records regularly.',style='Muted.TLabel',wraplength=780).pack(anchor='w')
         report=self.add_scroll_page('Stock sheet & income statement')
@@ -801,6 +889,7 @@ class App(tk.Tk):
         self.reload_periods()
         self.navigate(0)
         self.install_scrolling()
+        self.repaint_native(self)
         self.after(600,lambda:self.desktop_shortcut(existing_only=True))
         self.after(1000,self.offer_legacy)
 
@@ -841,6 +930,7 @@ class App(tk.Tk):
             for child in widget.winfo_children():attach(child)
         attach(self)
         self.bind_all('<Map>',lambda event:attach(event.widget) if hasattr(event.widget,'bindtags') else None,add='+')
+        self.bind_all('<Map>',lambda event:self.repaint_native(event.widget) if hasattr(event.widget,'winfo_children') else None,add='+')
         self.bind_class(tag,'<MouseWheel>',self.scroll_wheel)
         self.bind_class(tag,'<Shift-MouseWheel>',self.scroll_wheel)
         # Tk 8.7/9 sends precision two-finger gestures as TouchpadScroll,
@@ -954,7 +1044,7 @@ class App(tk.Tk):
         tk.Label(hero,text='MUTOWEI INVESTMENTS',font=('Segoe UI',8,'bold'),bg='#173b45',fg='#7ad8bf').place(x=22,y=18)
         self.hero_heading=tk.Label(hero,text='WhatKind?',font=('Segoe UI',22,'bold'),bg='#173b45',fg='white')
         self.hero_heading.place(x=20,y=39)
-        tk.Label(hero,text='Clear records for every counter.',font=('Segoe UI',10),bg='#173b45',fg='#b9d1d4').place(x=22,y=88)
+        self.hero_shop=tk.Label(hero,text=SHOP_COLOURS[self.shop_id][2],font=('Segoe UI',10,'bold'),bg='#173b45',fg=SHOP_COLOURS[self.shop_id][1]);self.hero_shop.place(x=22,y=88)
         art=tk.Canvas(hero,width=130,height=110,bg='#173b45',highlightthickness=0)
         art.place(relx=1,x=-145,y=10)
         self.hero_art=art
@@ -998,9 +1088,16 @@ class App(tk.Tk):
             if not existing_only:messagebox.showerror('Shortcut could not be updated',str(exc))
 
     def paint_shops(self):
+        p=self.palette
         for key,button in self.shop_buttons.items():
-            active=key==self.shop_id
-            button.configure(bg='#173b45' if active else '#e4eeee',fg='white' if active else '#385c61')
+            primary,bright,_=SHOP_COLOURS[key];active=key==self.shop_id
+            button.configure(bg=primary if active else p['panel'],fg='white' if active else (bright if self.dark_mode.get() else primary),highlightthickness=2,highlightbackground=primary,activebackground=primary,activeforeground='white')
+        primary,bright,_=SHOP_COLOURS[self.shop_id]
+        style=ttk.Style(self);style.configure('Accent.TButton',background=primary);style.map('Accent.TButton',background=[('active',primary),('pressed',primary)])
+        style.configure('Metric.TLabel',foreground=bright if self.dark_mode.get() else primary)
+        if hasattr(self,'transition_mark'):self.transition_line.itemconfigure(self.transition_mark,fill=bright)
+        if hasattr(self,'hero_shop'):self.hero_shop.configure(text=SHOP_COLOURS[self.shop_id][2],fg=bright)
+        if hasattr(self,'hero_ring'):self.hero_art.itemconfigure(self.hero_ring,fill=primary)
 
     def switch_shop(self,shop,force=False):
         if shop not in SHOPS:return
@@ -1032,6 +1129,7 @@ class App(tk.Tk):
         grab=self.grab_current()
         for child in self.winfo_children():
             if isinstance(child,tk.Toplevel) and child is not grab:child.destroy()
+        self.shelf_page=0
         self.reload_periods();self.navigate(0)
 
     def offer_legacy(self,force=False):
@@ -1098,7 +1196,7 @@ class App(tk.Tk):
         def reveal(t):
             width=max(1,self.transition_line.winfo_width())
             self.transition_line.coords(self.transition_mark,0,0,width*t,3)
-            self.page_title.configure(foreground=blend_color('#93aaa9','#193b41',t))
+            self.page_title.configure(foreground=blend_color('#93aaa9',self.palette['text'],t))
         self.animate('page-reveal',300,reveal)
         if index==0:
             import math
@@ -1141,30 +1239,61 @@ class App(tk.Tk):
             for child in widget.winfo_children():bind(child)
         bind(card)
 
+    def load_visual_setting(self,key,default):
+        import json
+        try:return json.loads((DATA/'visual-settings.json').read_text()).get(key,default)
+        except (OSError,ValueError,AttributeError):return default
+
+    def toggle_dark(self):
+        import json
+        try:(DATA/'visual-settings.json').write_text(json.dumps({'dark':self.dark_mode.get()}),encoding='utf-8')
+        except OSError as exc:messagebox.showerror('Appearance preference',str(exc))
+        self.apply_theme();self.repaint_native(self);self.paint_shops();self.refresh_visuals()
+        self.page_title.configure(foreground=self.palette['text'])
+
+    def repaint_native(self,widget):
+        if not hasattr(self,'palette'):return
+        p=self.palette
+        mapping={'#f2f6f6':p['bg'],'white':p['panel'],'#ffffff':p['panel'],'#193b41':p['text'],'#244047':p['text'],'#25464b':p['text'],'#627c80':p['muted'],'#e1ebeb':p['border'],'#dde6e6':p['border'],'#e2e9e9':p['border']}
+        try:
+            if isinstance(widget,(tk.Frame,tk.Label,tk.Canvas,tk.Text,tk.Listbox,tk.Toplevel,tk.Tk)):
+                if not hasattr(widget,'_appearance_original'):
+                    widget._appearance_original={key:widget.cget(key) for key in ('background','foreground','insertbackground','selectbackground','highlightbackground') if key in widget.keys()}
+                updates={key:(value if key=='foreground' and str(value).lower() in ('white','#ffffff') else mapping.get(str(value).lower(),value)) for key,value in widget._appearance_original.items()}
+                if isinstance(widget,(tk.Text,tk.Listbox)):
+                    updates.update(background=p['panel'],foreground=p['text'],selectbackground=p['selection'])
+                    if isinstance(widget,tk.Text):updates['insertbackground']=p['text']
+                if updates:widget.configure(**updates)
+            for child in widget.winfo_children():self.repaint_native(child)
+        except tk.TclError:pass
+
     def apply_theme(self):
-        self.configure(bg='#f2f6f6')
-        self.option_add('*Font',('Segoe UI',10))
+        self.palette=visual_palette(self.dark_mode.get());p=self.palette
+        self.configure(bg=p['bg']);self.option_add('*Font',('Segoe UI',10))
+        self.option_add('*TCombobox*Listbox.background',p['panel']);self.option_add('*TCombobox*Listbox.foreground',p['text'])
         style=ttk.Style(self);style.theme_use('clam')
-        style.configure('.',font=('Segoe UI',10),background='#f2f6f6',foreground='#193b41')
-        style.configure('TFrame',background='#f2f6f6')
-        style.configure('TLabel',background='#f2f6f6',foreground='#193b41')
+        style.configure('.',font=('Segoe UI',10),background=p['bg'],foreground=p['text'])
+        style.configure('TFrame',background=p['bg']);style.configure('TLabel',background=p['bg'],foreground=p['text'])
         style.configure('Title.TLabel',font=('Segoe UI',23,'bold'))
         style.configure('Section.TLabel',font=('Segoe UI',13,'bold'))
-        style.configure('Muted.TLabel',foreground='#627c80',font=('Segoe UI',10))
-        style.configure('Card.TFrame',background='white',relief='solid',borderwidth=1,bordercolor='#e2e9e9')
-        for name,font,color in [('CardCaption.TLabel',('Segoe UI',8,'bold'),'#627c80'),('Metric.TLabel',('Segoe UI',21,'bold'),'#176c60'),('CardTitle.TLabel',('Segoe UI',14,'bold'),'#193b41'),('CardBody.TLabel',('Segoe UI',10),'#627c80')]:
-            style.configure(name,background='white',font=font,foreground=color)
-        style.configure('TButton',padding=(12,10),background='#e2eeee',foreground='#23494c',borderwidth=0)
-        style.map('TButton',background=[('active','#d0e5e1'),('disabled','#edf1f1')])
-        style.configure('Accent.TButton',background='#167565',foreground='white',padding=(16,10))
-        style.map('Accent.TButton',background=[('pressed','#0c4c43'),('active','#105f52')],foreground=[('active','white')],padding=[('pressed',(16,11,16,9))])
-        style.configure('TEntry',fieldbackground='white',padding=7)
-        style.configure('TCombobox',fieldbackground='white',padding=7)
-        style.configure('Treeview',background='white',fieldbackground='white',foreground='#25464b',rowheight=32,borderwidth=0)
-        style.configure('Treeview.Heading',background='#e4eeee',foreground='#385c61',padding=(8,10),font=('Segoe UI',9,'bold'),relief='flat')
-        style.map('Treeview',background=[('selected','#d0eae2')],foreground=[('selected','#124b40')])
-        style.configure('Workspace.TNotebook',background='#f2f6f6',borderwidth=0,tabmargins=0)
-        style.layout('Workspace.TNotebook.Tab',[])
+        style.configure('Muted.TLabel',foreground=p['muted'],font=('Segoe UI',10))
+        style.configure('Card.TFrame',background=p['panel'],relief='solid',borderwidth=1,bordercolor=p['border'])
+        for name,font,color in [('CardCaption.TLabel',('Segoe UI',9,'bold'),p['muted']),('Metric.TLabel',('Segoe UI',21,'bold'),p['good']),('CardTitle.TLabel',('Segoe UI',14,'bold'),p['text']),('CardBody.TLabel',('Segoe UI',10),p['muted'])]:
+            style.configure(name,background=p['panel'],font=font,foreground=color)
+        style.configure('TButton',padding=(16,12),background=p['border'],foreground=p['text'],borderwidth=0)
+        style.map('TButton',background=[('active',p['selection']),('disabled',p['bg'])],foreground=[('disabled',p['muted'])])
+        style.configure('Accent.TButton',background='#167565',foreground='white',padding=(18,12))
+        style.map('Accent.TButton',background=[('pressed','#0c4c43'),('active','#105f52')],foreground=[('active','white')])
+        for name in ('TEntry','TCombobox','TSpinbox'):
+            style.configure(name,fieldbackground=p['input'],foreground=p['text'],insertcolor=p['text'],padding=8,arrowcolor=p['text'],bordercolor=p['border'])
+            style.map(name,fieldbackground=[('readonly',p['input']),('disabled',p['bg'])],foreground=[('readonly',p['text']),('disabled',p['muted'])],selectbackground=[('focus',p['selection'])])
+        for name in ('TCheckbutton','TRadiobutton'):style.map(name,background=[('active',p['bg'])],foreground=[('active',p['text'])])
+        style.configure('Treeview',background=p['panel'],fieldbackground=p['panel'],foreground=p['text'],rowheight=44,borderwidth=0)
+        style.configure('Treeview.Heading',background=p['border'],foreground=p['text'],padding=(10,12),font=('Segoe UI',10,'bold'),relief='flat')
+        style.map('Treeview',background=[('selected',p['selection'])],foreground=[('selected',p['text'])])
+        style.configure('Workspace.TNotebook',background=p['bg'],borderwidth=0,tabmargins=0);style.layout('Workspace.TNotebook.Tab',[])
+        style.configure('Good.TLabel',background=p['bg'],foreground=p['good'],font=('Segoe UI',12,'bold'))
+        style.configure('Warning.TLabel',background=p['bg'],foreground=p['warning'],font=('Segoe UI',12,'bold'))
 
     def navigate(self,index):
         self.nav_selected=index
@@ -1286,6 +1415,153 @@ class App(tk.Tk):
             self.form('Stock and automatic sales calculations',fields,save,loader=load,preview=preview)
         except Exception as exc:messagebox.showerror('Stock entry',str(exc))
 
+    def build_visuals(self,parent):
+        ttk.Label(parent,text='Business pulse',style='Section.TLabel').pack(anchor='w',pady=(16,8))
+        self.closing_badge=ttk.Label(parent,text='No stock counts',style='Muted.TLabel');self.closing_badge.pack(anchor='w',pady=(0,12))
+        toolbar=ttk.Frame(parent);toolbar.pack(fill='x')
+        ttk.Label(toolbar,text='Expected sales & provisional profit',style='Section.TLabel').pack(side='left')
+        self.chart_mode=tk.StringVar(value='Daily');self.chart_data=[]
+        for mode in ('Monthly','Weekly','Daily'):
+            ttk.Radiobutton(toolbar,text=mode,value=mode,variable=self.chart_mode,command=self.refresh_trend).pack(side='right',padx=5)
+        self.trend_canvas=tk.Canvas(parent,height=255,bg=self.palette['panel'],highlightthickness=0)
+        self.trend_canvas.pack(fill='x',pady=(10,4));self.trend_canvas.bind('<Configure>',lambda e:self.draw_trend())
+        self.trend_note=ttk.Label(parent,text='',style='Muted.TLabel',wraplength=850);self.trend_note.pack(anchor='w',pady=(0,18))
+        top=ttk.Frame(parent);top.pack(fill='x')
+        ttk.Label(top,text='Product shelf • selected period',style='Section.TLabel').pack(side='left')
+        ttk.Button(top,text='Pictures, categories & stock targets',command=self.edit_product_visuals).pack(side='right')
+        self.shelf=ttk.Frame(parent);self.shelf.pack(fill='x',pady=10)
+        nav=ttk.Frame(parent);nav.pack(fill='x');self.shelf_page=0
+        self.shelf_prev=ttk.Button(nav,text='‹ Previous',command=lambda:self.page_shelf(-1));self.shelf_prev.pack(side='left')
+        self.shelf_status=ttk.Label(nav,style='Muted.TLabel');self.shelf_status.pack(side='left',padx=12)
+        self.shelf_next=ttk.Button(nav,text='Next ›',command=lambda:self.page_shelf(1));self.shelf_next.pack(side='left')
+        ttk.Label(parent,text='Stock targets are individual units you set per product. Above target is a review flag, not proof of overstock. Pictures are small local thumbnails included in shop backups.',style='Muted.TLabel',wraplength=850).pack(anchor='w',pady=(8,10))
+
+    def refresh_visuals(self):
+        if not hasattr(self,'trend_canvas'):return
+        from ledger import closing_indicator
+        try:
+            period=self.pid();rows,totals=self.ledger.report(period)
+            count=self.ledger.db.execute('SELECT COUNT(*) FROM products').fetchone()[0]
+            p=self.ledger.db.execute('SELECT * FROM periods WHERE id=?',(period,)).fetchone()
+            entered=self.ledger.db.execute('SELECT COUNT(*) FROM cash WHERE period=?',(period,)).fetchone()[0]
+            complete=len(rows)==count and entered==(date.fromisoformat(p['end'])-date.fromisoformat(p['start'])).days+1
+            label,state=closing_indicator(totals,bool(rows))
+            if rows and not complete:label,state='Closing incomplete — confirm all products and dates in Guided closing','neutral'
+        except ValueError:label,state='Select a period and complete stock counts to review closing','neutral'
+        self.closing_badge.configure(text=label,style={'good':'Good.TLabel','warning':'Warning.TLabel'}.get(state,'Muted.TLabel'))
+        self.metric_values['Unreconciled difference (positive = short)'].configure(foreground=self.palette['good'] if state=='good' else self.palette['warning'] if state=='warning' else self.palette['muted'])
+        self.paint_shops();self.refresh_trend();self.render_shelf()
+
+    def refresh_trend(self):
+        self.chart_data,excluded=self.ledger.chart_series(self.chart_mode.get())
+        self.trend_note.configure(text=f"Whole shop history • latest {len(self.chart_data)} recorded {self.chart_mode.get().lower()} bucket(s), not necessarily complete days/weeks/months. {excluded} empty, invalid or boundary-crossing period(s) excluded. Daily charts use one-day stock periods only. Profit is provisional.")
+        self.draw_trend()
+
+    def draw_trend(self):
+        if not hasattr(self,'trend_canvas'):return
+        previous=self._animations.pop('trend-chart',None)
+        if previous:
+            try:self.after_cancel(previous['after'])
+            except tk.TclError:pass
+        canvas=self.trend_canvas;p=self.palette;canvas.configure(bg=p['panel']);canvas.delete('all')
+        width=max(400,canvas.winfo_width());height=255;data=self.chart_data
+        primary,bright,_=SHOP_COLOURS[self.shop_id];sales_color=bright if self.dark_mode.get() else primary;profit_color='#cba4ff' if self.dark_mode.get() else '#8b67be'
+        canvas.create_text(16,19,text='■ Expected sales',fill=sales_color,anchor='w',font=('Segoe UI',10,'bold'))
+        canvas.create_text(190,19,text='■ Provisional profit',fill=profit_color,anchor='w',font=('Segoe UI',10,'bold'))
+        if not data:
+            canvas.create_text(width/2,130,text='No comparable records yet\nSelect Weekly or Monthly for multi-day periods.',fill=p['muted'],font=('Segoe UI',13),justify='center');return
+        low=min(0,min(float(r['profit']) for r in data));high=max(1,max(max(float(r['sales']),float(r['profit'])) for r in data));span=high-low
+        def y(value):return 215-(float(value)-low)/span*160
+        for value in sorted(set((low,0,high))):
+            line_y=y(value);canvas.create_line(65,line_y,width-18,line_y,fill=p['border']);canvas.create_text(58,line_y,text=f'${value:,.0f}',fill=p['muted'],anchor='e',font=('Segoe UI',9))
+        band=(width-90)/len(data);zero=y(0)
+        for index,row in enumerate(data):canvas.create_text(65+band*(index+.5),236,text=row['label'],fill=p['muted'],font=('Segoe UI',9))
+        def frame(progress):
+            canvas.delete('plot')
+            for index,row in enumerate(data):
+                center=65+band*(index+.5);bar=min(24,band*.27)
+                for key,left,color in [('sales',center-bar-2,sales_color),('profit',center+2,profit_color)]:
+                    end=zero+(y(row[key])-zero)*progress
+                    canvas.create_rectangle(left,min(zero,end),left+bar,max(zero,end),fill=color,outline='',tags='plot')
+        self.animate('trend-chart',380,frame)
+        def inspect(event):
+            index=int((event.x-65)/band)
+            if 65<=event.x<width-25 and 0<=index<len(data):
+                row=data[index];self.trend_note.configure(text=f"{row['key']}: expected sales ${row['sales']:.2f}; provisional profit ${row['profit']:.2f}; {row['periods']} reporting period(s). Recorded periods only; costs and reconciliation still require review.")
+        canvas.bind('<Button-1>',inspect)
+
+    def page_shelf(self,direction):
+        self.shelf_page=max(0,self.shelf_page+direction);self.render_shelf()
+
+    def render_shelf(self):
+        from ledger import stock_indicator
+        import math
+        if not hasattr(self,'shelf'):return
+        try:period=self.pid()
+        except ValueError:period=None
+        rows=self.ledger.visual_stock(period);pages=max(1,math.ceil(len(rows)/6));self.shelf_page=min(self.shelf_page,pages-1)
+        for child in self.shelf.winfo_children():child.destroy()
+        self.product_images=[];p=self.palette
+        for index,row in enumerate(rows[self.shelf_page*6:self.shelf_page*6+6]):
+            card=ttk.Frame(self.shelf,style='Card.TFrame',padding=14);card.grid(row=index//2,column=index%2,sticky='nsew',padx=(0,10 if index%2==0 else 0),pady=5);self.shelf.columnconfigure(index%2,weight=1,uniform='shelf')
+            art=tk.Canvas(card,width=64,height=64,bg=p['panel'],highlightthickness=0);art.grid(row=0,column=0,rowspan=2,padx=(0,10),sticky='n')
+            if row['photo']:
+                try:
+                    photo=tk.PhotoImage(master=self,data=row['photo']);photo=photo.subsample(max(1,math.ceil(max(photo.width(),photo.height())/60)));self.product_images.append(photo);art.create_image(32,32,image=photo)
+                except tk.TclError:category_icon(art,row['category'],15,12,SHOP_COLOURS[self.shop_id][1 if self.dark_mode.get() else 0])
+            else:category_icon(art,row['category'],15,12,SHOP_COLOURS[self.shop_id][1 if self.dark_mode.get() else 0])
+            ttk.Label(card,text=row['name'],style='CardTitle.TLabel',wraplength=260).grid(row=0,column=1,sticky='w');card.columnconfigure(1,weight=1)
+            ttk.Label(card,text=row['category']+' • '+row['unit'],style='CardBody.TLabel').grid(row=1,column=1,sticky='w')
+            status,state,fraction=stock_indicator(row['closing'],row['low'],row['high']);color=p['good'] if state=='good' else p['warning'] if state=='warning' else p['muted']
+            available=(row['opening'] or 0)+row['received']
+            if fraction is None:fraction=min(1,row['closing']/max(1,available))
+            text=('Not counted' if row['closing'] is None else f"Closing: {row['closing']} {row['unit']}")+f' • {status}'
+            ttk.Label(card,text=text,style='CardBody.TLabel',foreground=color,wraplength=350).grid(row=2,column=0,columnspan=2,sticky='w',pady=(8,4))
+            if row['low'] is not None:ttk.Label(card,text=f"Low ≤ {row['low']}  •  High > {row['high']}",style='CardBody.TLabel').grid(row=3,column=0,columnspan=2,sticky='w')
+            bar=tk.Canvas(card,height=10,bg=p['border'],highlightthickness=0);bar.grid(row=4,column=0,columnspan=2,sticky='ew',pady=(7,0))
+            fill=bar.create_rectangle(0,0,0,10,fill=color,outline='')
+            def resize(event,c=bar,item=fill,target=fraction,key=row['id']):
+                self.animate('stockbar:'+str(key),300,lambda t:c.coords(item,0,0,max(1,c.winfo_width())*target*t,10))
+            bar.bind('<Configure>',resize)
+        if not rows:ttk.Label(self.shelf,text='Add a product to build your shelf. Then add a picture, category and stock targets.',style='Muted.TLabel').pack(anchor='w',pady=20)
+        self.shelf_status.configure(text=f'Page {self.shelf_page+1} of {pages} • {len(rows)} product(s)')
+        self.shelf_prev.configure(state='normal' if self.shelf_page else 'disabled');self.shelf_next.configure(state='normal' if self.shelf_page+1<pages else 'disabled')
+
+    def edit_product_visuals(self):
+        from ledger import PRODUCT_CATEGORIES
+        self.auth.require(self.session);rows=self.ledger.visual_stock();products={r['name']:r for r in rows}
+        if not products:messagebox.showinfo('Product pictures','Add a product first.',parent=self);return
+        win=tk.Toplevel(self);win.title('Product pictures, categories & stock targets');win.transient(self);win.grab_set();win.configure(bg=self.palette['bg'])
+        selection=tk.StringVar(value=next(iter(products)));category=tk.StringVar();low=tk.StringVar();high=tk.StringVar();photo=[None]
+        variables=[('Product',selection,list(products)),('Category',category,PRODUCT_CATEGORIES),('Low stock at or below (units)',low,None),('High stock above (units)',high,None)]
+        for index,(label,var,choices) in enumerate(variables):
+            ttk.Label(win,text=label).grid(row=index,column=0,sticky='w',padx=16,pady=8)
+            widget=ttk.Combobox(win,textvariable=var,values=choices,state='readonly',width=35) if choices else ttk.Entry(win,textvariable=var,width=37)
+            widget.grid(row=index,column=1,padx=16,pady=8)
+        preview=tk.Canvas(win,width=180,height=180,bg=self.palette['panel'],highlightthickness=0);preview.grid(row=4,column=0,columnspan=2,pady=10)
+        def paint():
+            preview.delete('all')
+            if photo[0]:
+                preview.picture=tk.PhotoImage(master=win,data=photo[0]);preview.create_image(90,90,image=preview.picture)
+            else:category_icon(preview,category.get(),74,72,SHOP_COLOURS[self.shop_id][1 if self.dark_mode.get() else 0])
+        def load(*_):
+            row=products[selection.get()];category.set(row['category']);low.set('' if row['low'] is None else row['low']);high.set('' if row['high'] is None else row['high']);photo[0]=row['photo'];paint()
+        def choose():
+            path=filedialog.askopenfilename(parent=win,title='Choose a product picture',filetypes=[('Product images','*.png *.gif *.jpg *.jpeg'),('PNG','*.png')])
+            if path:
+                try:photo[0]=product_picture(win,path);paint()
+                except Exception as exc:messagebox.showerror('Product picture',str(exc),parent=win)
+        def save():
+            try:
+                self.auth.require(self.session);self.ledger.product_appearance(products[selection.get()]['id'],category.get(),low.get(),high.get(),photo[0]);win.destroy();self.render_shelf()
+            except Exception as exc:messagebox.showerror('Product appearance',str(exc),parent=win)
+        selection.trace_add('write',load);category.trace_add('write',lambda *_:paint());load()
+        ttk.Label(win,text='Leave both stock limits blank for no target. Pictures are resized to a small PNG.\nPNG/GIF supported; JPEG import uses Windows. These settings do not change stock quantities.',wraplength=520,style='Muted.TLabel').grid(row=5,column=0,columnspan=2,padx=16,pady=8)
+        buttons=ttk.Frame(win);buttons.grid(row=6,column=0,columnspan=2,padx=16,pady=16)
+        ttk.Button(buttons,text='Choose picture',command=choose).pack(side='left',padx=4)
+        ttk.Button(buttons,text='Remove picture',command=lambda:(photo.__setitem__(0,None),paint())).pack(side='left',padx=4)
+        ttk.Button(buttons,text='Save appearance',command=save,style='Accent.TButton').pack(side='left',padx=4)
+
     def market_prices(self):
         try:
             self.auth.require(self.session)
@@ -1322,6 +1598,7 @@ class App(tk.Tk):
         self.refresh_controls()
         self.refresh_registers()
         self.refresh_operations()
+        self.refresh_visuals()
         self.summary.configure(state='normal');self.summary.delete('1.0','end');self.summary.insert('end',text);self.summary.configure(state='disabled')
 
     def export(self,kind):

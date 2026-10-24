@@ -49,6 +49,41 @@ class Ledger:
             self.db.execute('INSERT INTO product_costing(product,method) VALUES (?,?)',(pid,cost_method))
             return pid
 
+    def product_appearance(self, product, category, low, high, photo=None):
+        if category not in PRODUCT_CATEGORIES:raise ValueError('Choose a product category.')
+        low=quantity(low) if str(low).strip() else None
+        high=quantity(high) if str(high).strip() else None
+        if (low is None)!=(high is None) or (low is not None and high<=low):raise ValueError('Set both stock limits, with high greater than low, or leave both blank.')
+        if photo is not None and (not isinstance(photo,bytes) or len(photo)>256*1024 or not photo.startswith(b'\x89PNG\r\n\x1a\n')):raise ValueError('Choose a small PNG product picture (up to 256 KB after resizing).')
+        if not self.db.execute('SELECT 1 FROM products WHERE id=?',(product,)).fetchone():raise ValueError('Product not found.')
+        with self.db:
+            self.db.execute('''INSERT INTO product_visuals(product,category,low,high,photo) VALUES (?,?,?,?,?)
+                ON CONFLICT(product) DO UPDATE SET category=excluded.category,low=excluded.low,high=excluded.high,photo=excluded.photo''',(product,category,low,high,photo))
+
+    def visual_stock(self, period=None):
+        return [dict(row) for row in self.db.execute('''SELECT p.id,p.name,p.unit,COALESCE(v.category,'Other') AS category,v.low,v.high,v.photo,
+            s.closing,s.opening,COALESCE((SELECT SUM(r.units) FROM receipts r WHERE r.product=p.id AND r.period=?),0) AS received
+            FROM products p LEFT JOIN product_visuals v ON v.product=p.id
+            LEFT JOIN stock s ON s.product=p.id AND s.period=? ORDER BY p.name''',(period,period))]
+
+    def chart_series(self, mode):
+        """Aggregate only periods wholly inside a bucket. Never invent daily sales."""
+        if mode not in ('Daily','Weekly','Monthly'):raise ValueError('Choose Daily, Weekly or Monthly.')
+        buckets={};excluded=0
+        for period in self.db.execute('SELECT * FROM periods ORDER BY start'):
+            start=date.fromisoformat(period['start']);end=date.fromisoformat(period['end'])
+            if mode=='Daily':fits=start==end;key=start.isoformat();label=start.strftime('%d %b')
+            elif mode=='Weekly':
+                fits=start.isocalendar()[:2]==end.isocalendar()[:2];year,week,_=start.isocalendar();key=f'{year}-W{week:02d}';label=f'W{week:02d} {year}'
+            else:fits=(start.year,start.month)==(end.year,end.month);key=start.strftime('%Y-%m');label=start.strftime('%b %Y')
+            if not fits:excluded+=1;continue
+            try:rows,totals=self.report(period['id'])
+            except ValueError:excluded+=1;continue
+            if not rows:excluded+=1;continue
+            bucket=buckets.setdefault(key,{'key':key,'label':label,'sales':Decimal(0),'profit':Decimal(0),'periods':0})
+            bucket['sales']+=Decimal(totals['Stock-implied sales']);bucket['profit']+=Decimal(totals['Net profit before tax (stock-implied)']);bucket['periods']+=1
+        return [buckets[k] for k in sorted(buckets)[-10:]],excluded
+
     def period(self, start, end):
         a, b = date.fromisoformat(start), date.fromisoformat(end)
         if a > b:
@@ -315,6 +350,7 @@ class Ledger:
         CREATE TABLE IF NOT EXISTS opening_layers(id INTEGER PRIMARY KEY,period INTEGER REFERENCES periods(id),product INTEGER REFERENCES products(id),sequence INTEGER,units INTEGER,unit_cost TEXT,source TEXT);
         CREATE TABLE IF NOT EXISTS stock_sales(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), product INTEGER REFERENCES products(id), amount INTEGER NOT NULL, UNIQUE(period,product));
         CREATE TABLE IF NOT EXISTS product_packages(id INTEGER PRIMARY KEY, product INTEGER UNIQUE REFERENCES products(id), package TEXT NOT NULL, per_package INTEGER NOT NULL CHECK(per_package>0));
+        CREATE TABLE IF NOT EXISTS product_visuals(product INTEGER PRIMARY KEY REFERENCES products(id),category TEXT NOT NULL,low INTEGER,high INTEGER,photo BLOB);
         CREATE TABLE IF NOT EXISTS receipt_packages(id INTEGER PRIMARY KEY, receipt INTEGER UNIQUE REFERENCES receipts(id), package TEXT NOT NULL, per_package INTEGER NOT NULL, packages INTEGER NOT NULL, loose INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS period_locks(period INTEGER PRIMARY KEY REFERENCES periods(id), reason TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS import_batches(id INTEGER PRIMARY KEY, period INTEGER REFERENCES periods(id), mode TEXT NOT NULL, digest TEXT NOT NULL, source TEXT NOT NULL, UNIQUE(period,mode,digest));
@@ -978,3 +1014,21 @@ class MarketSearch:
             message={401:'API key was rejected.',403:'API access was denied; check the key and credits.',429:'Search limit reached. Use saved offline results or try later.'}.get(exc.code,f'Search service returned HTTP {exc.code}.')
             raise ValueError(message) from None
         except (urllib.error.URLError,TimeoutError,OSError):raise ValueError('Online search could not connect. Your saved offline results remain available.') from None
+
+
+PRODUCT_CATEGORIES=['Grocery','Beer','Cigarettes','Household','Other']
+
+
+def stock_indicator(closing,low=None,high=None):
+    if closing is None:return 'Not counted','neutral',0
+    if low is None or high is None:return 'Set stock range','neutral',None
+    if closing<=low:return 'Low stock','warning',min(1,closing/max(1,high))
+    if closing>high:return 'Above target','warning',1
+    return 'Healthy stock','good',min(1,closing/max(1,high))
+
+
+def closing_indicator(totals,has_stock):
+    if not has_stock:return 'No stock counts','neutral'
+    value=Decimal(totals['Unreconciled difference (positive = short)'])
+    if not value:return 'Balanced — recorded stock and money agree','good'
+    return f"{'Shortage' if value>0 else 'Surplus'} ${abs(value):.2f} — review entries",'warning'
