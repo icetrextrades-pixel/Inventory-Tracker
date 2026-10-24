@@ -612,7 +612,8 @@ def scan_image(path):
     with tempfile.TemporaryDirectory(prefix='family-shop-ocr-') as folder:
         script=Path(folder)/'scan.ps1';output=Path(folder)/'text.txt'
         script.write_text(OCR_POWERSHELL,encoding='utf-8-sig')
-        result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-File',str(script),'-ImagePath',str(source),'-OutputPath',str(output)],capture_output=True,timeout=120,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        # Apply only to this child process; do not change Windows/user policy.
+        result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',str(script),'-ImagePath',str(source),'-OutputPath',str(output)],capture_output=True,timeout=120,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         if result.returncode or not output.exists():
             error=result.stderr.decode(errors='replace').strip()
             raise ValueError('Windows OCR could not read this image. Check that English OCR is installed and the image is clear. If Windows blocks the script, paste the text manually.\n'+error[:1000])

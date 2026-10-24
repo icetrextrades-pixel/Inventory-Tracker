@@ -1,9 +1,27 @@
 import unittest
-from ledger import Ledger,arrange_scan,import_reviewed
+from ledger import Ledger,arrange_scan,import_reviewed,scan_image
+import tempfile
+from pathlib import PosixPath
+from types import SimpleNamespace
+from unittest.mock import patch
 
 class ScannerTests(unittest.TestCase):
     def setUp(self):self.l=Ledger(':memory:');self.p=self.l.period('2026-10-01','2026-10-08')
     def tearDown(self):self.l.db.close()
+    def test_windows_scanner_uses_process_only_policy_and_literal_paths(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source=PosixPath(folder)/"shop & stock image.png";source.write_bytes(b'test image')
+            def execute(args,**kwargs):
+                self.assertEqual(args[:6],['powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File'])
+                self.assertNotIn('-Command',args)
+                self.assertEqual(args[args.index('-ImagePath')+1],str(source.resolve()))
+                self.assertTrue(kwargs['capture_output'])
+                PosixPath(args[args.index('-OutputPath')+1]).write_text('Bread 10',encoding='utf-8-sig')
+                return SimpleNamespace(returncode=0,stderr=b'')
+            with patch('os.name','nt'),patch('pathlib.Path',lambda value:PosixPath(value)),patch('subprocess.run',side_effect=execute) as run:
+                self.assertEqual(scan_image(source),'Bread 10')
+                self.assertEqual(run.call_count,1)
+
     def test_sort_stock_leaves_unknowns_blank(self):
         text,unparsed=arrange_scan('Bread 10 20 30 4 26 1.00 26.00\nUnreadable line','Stock counts')
         self.assertIn('Bread,each,10,4,,,,1.00',text)

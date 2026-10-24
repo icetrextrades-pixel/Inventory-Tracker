@@ -1,4 +1,4 @@
-# Mutowei Investments v0.20 — three-shop desktop app
+# Mutowei Investments v0.20.1 — three-shop desktop app
 
 **WhatKind?**
 
@@ -368,3 +368,8 @@ Install using **Update App**. This release adds all seven visual upgrades while 
 Appearance settings are not accounting transactions. Product categories, pictures and thresholds survive local and cloud shop backups and updates. Theme/motion preferences stay on the current computer. Photos count toward the existing cloud snapshot size limit, so the app stores thumbnails rather than original full-resolution files. No new Python packages, search keys or Supabase SQL are required for these graphics.
 
 Validation: 96 automated tests cover accounting regressions, stock indicator boundaries, incomplete/empty status, date-bucket rules, negative profit, visual-setting backup persistence and light/dark text contrast. Actual Tk screens were additionally exercised in a virtual display: both themes, all main sections, chart modes, product-photo resizing/decoding, shelf paging, product appearance dialog, shop switching and Reduce motion. Native Windows JPEG import, touch hardware and device font rendering still need checking on the owner's PC.
+
+
+## v0.20.1 — Windows scanner launch fix
+
+The scanner now starts its own PowerShell process with a process-only execution-policy option, matching the JPEG importer. This fixes the “scan.ps1 cannot be loaded because running scripts is disabled” error before OCR starts. It does not run Set-ExecutionPolicy or change Windows/user policy. Organisation-enforced policies can still prevent scripts; manual text entry remains available. Text recognition still requires the Windows OCR language and a readable image. Validation: 97 automated tests, including the scanner invocation and literal paths containing spaces and special characters. Real Windows OCR still needs a retry on the user's PC.
