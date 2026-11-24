@@ -103,7 +103,7 @@ private fun MutoweiApp() {
             Destination.STOCK -> InventoryScreen(selectedShop, padding)
             Destination.SALES -> PlaceholderScreen("Sales", "Sales checkout will be added after the stock foundation.", Icons.Default.PointOfSale, padding)
             Destination.RECORDS -> PlaceholderScreen("Records", "Purchases, stock movements and audit history will live here.", Icons.Default.ReceiptLong, padding)
-            Destination.ACCOUNT -> PlaceholderScreen("Account", "Owner sign-in, device security and sync settings.", Icons.Default.AccountCircle, padding)
+            Destination.ACCOUNT -> UpdateScreen(padding)
         }
     }
 }
