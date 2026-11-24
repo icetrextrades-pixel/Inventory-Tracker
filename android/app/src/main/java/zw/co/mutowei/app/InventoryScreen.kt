@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
@@ -34,9 +35,12 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
     val context = LocalContext.current
     val dao = remember { DatabaseProvider.get(context).stockDao() }
     val products by dao.observeProducts(shop.id).collectAsState(initial = emptyList())
+    val movements by dao.observeMovements(shop.id).collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
     var search by remember { mutableStateOf("") }
     var showAdd by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
+    var selectedProduct by remember { mutableStateOf<ProductEntity?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     val visible = products.filter { it.name.contains(search, ignoreCase = true) }
 
@@ -66,8 +70,12 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
                     Text(products.size.toString(), fontSize = 25.sp, fontWeight = FontWeight.Bold, color = StockInk)
                     Text("LOCAL PRODUCTS", fontSize = 10.sp, color = StockMuted, letterSpacing = 1.sp)
                 }
+                OutlinedButton(onClick = { showHistory = true }) {
+                    Icon(Icons.Default.History, null); Spacer(Modifier.width(5.dp)); Text("History")
+                }
+                Spacer(Modifier.width(8.dp))
                 Button(onClick = { showAdd = true }, colors = ButtonDefaults.buttonColors(containerColor = StockInk), shape = RoundedCornerShape(12.dp)) {
-                    Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("Add product")
+                    Icon(Icons.Default.Add, null); Spacer(Modifier.width(5.dp)); Text("Add")
                 }
             }
         }
@@ -89,27 +97,15 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
                         Icon(Icons.Default.Inventory2, null, tint = StockGold, modifier = Modifier.size(28.dp))
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text(product.name, fontWeight = FontWeight.SemiBold, color = StockInk)
-                            Text("${product.category} · ${product.sellingPriceMinor / 100}. ${(product.sellingPriceMinor % 100).toString().padStart(2, '0')} / ${product.baseUnit}", fontSize = 11.sp, color = StockMuted)
+                            Text("${product.category} · ${product.sellingPriceMinor / 100}.${(product.sellingPriceMinor % 100).toString().padStart(2, '0')} / ${product.baseUnit}", fontSize = 11.sp, color = StockMuted)
                             Text("On hand: ${product.quantityOnHand}", fontWeight = FontWeight.Bold, color = if (product.lowStockThreshold != null && product.quantityOnHand <= product.lowStockThreshold) Color(0xFFB94A48) else StockInk)
                         }
-                        OutlinedButton(onClick = {
-                            scope.launch {
-                                val now = System.currentTimeMillis()
-                                val movementId = UUID.randomUUID().toString()
-                                val txId = UUID.randomUUID().toString()
-                                dao.recordMovement(
-                                    StockMovementEntity(movementId, shop.id, product.id, "RECEIVE", 1, "Quick receive", null, now),
-                                    SyncQueueEntity(txId, shop.id, "STOCK_MOVEMENT", """{"movementId":"$movementId","productId":"${product.id}","delta":1}""", now)
-                                )
-                            }
-                        }) { Text("+1") }
+                        OutlinedButton(onClick = { selectedProduct = product }) { Text("Manage") }
                     }
                 }
             }
         }
-        item {
-            Text("Inventory is stored locally on this device. Cloud sync will be connected after the data structure is validated.", fontSize = 11.sp, color = StockMuted)
-        }
+        item { Text("Changes are saved locally. Cloud sync will be connected after the data structure is validated.", fontSize = 11.sp, color = StockMuted) }
         if (error != null) item { Text(error!!, color = Color(0xFFB94A48), fontSize = 12.sp) }
     }
 
@@ -136,12 +132,99 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
                         showAdd = false
                         error = null
                     } catch (e: Exception) {
-                        error = "Could not save product. Check that the name is not already in this shop."
+                        error = "Could not save product. Check the name and try again."
                     }
                 }
             }
         )
     }
+
+    selectedProduct?.let { product ->
+        StockActionDialog(
+            product = product,
+            onDismiss = { selectedProduct = null },
+            onSave = { kind, quantity, reason ->
+                scope.launch {
+                    try {
+                        val now = System.currentTimeMillis()
+                        val delta = if (kind == "RECEIVE") quantity else -quantity
+                        val movementId = UUID.randomUUID().toString()
+                        dao.recordMovement(
+                            StockMovementEntity(movementId, shop.id, product.id, kind, delta, reason, null, now),
+                            SyncQueueEntity(UUID.randomUUID().toString(), shop.id, "STOCK_MOVEMENT", """{"movementId":"$movementId","productId":"${product.id}","delta":$delta,"reason":"$reason"}""", now)
+                        )
+                        selectedProduct = null
+                        error = null
+                    } catch (e: Exception) {
+                        error = "Stock was not changed. Check the quantity available and try again."
+                    }
+                }
+            }
+        )
+    }
+
+    if (showHistory) {
+        AlertDialog(
+            onDismissRequest = { showHistory = false },
+            title = { Text("Stock movement history", fontWeight = FontWeight.Bold) },
+            text = {
+                if (movements.isEmpty()) {
+                    Text("No stock movements recorded yet.")
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(movements.take(100), key = { it.id }) { movement ->
+                            val productName = products.firstOrNull { it.id == movement.productId }?.name ?: "Product"
+                            Column {
+                                Text(productName, fontWeight = FontWeight.SemiBold)
+                                Text("${movement.movementType} · ${if (movement.quantityDelta > 0) "+" else ""}${movement.quantityDelta} · ${movement.reason ?: "No reason"}", fontSize = 12.sp, color = StockMuted)
+                                Text(java.text.SimpleDateFormat("dd MMM yyyy, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(movement.createdAt)), fontSize = 10.sp, color = StockMuted)
+                            }
+                            Divider()
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showHistory = false }) { Text("Close") } }
+        )
+    }
+}
+
+@Composable
+private fun StockActionDialog(
+    product: ProductEntity,
+    onDismiss: () -> Unit,
+    onSave: (String, Int, String) -> Unit
+) {
+    var kind by remember { mutableStateOf("RECEIVE") }
+    var quantity by remember { mutableStateOf("1") }
+    var reason by remember { mutableStateOf("") }
+    val amount = quantity.toIntOrNull() ?: 0
+    val valid = amount > 0 && (kind == "RECEIVE" || amount <= product.quantityOnHand) && reason.isNotBlank()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Manage ${product.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Current on hand: ${product.quantityOnHand}", fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = kind == "RECEIVE", onClick = { kind = "RECEIVE" })
+                    Text("Receive stock")
+                    Spacer(Modifier.width(8.dp))
+                    RadioButton(selected = kind == "ADJUSTMENT", onClick = { kind = "ADJUSTMENT" })
+                    Text("Remove / adjust")
+                }
+                OutlinedTextField(quantity, { quantity = it.filter(Char::isDigit) }, label = { Text("Quantity") }, singleLine = true)
+                OutlinedTextField(reason, { reason = it }, label = { Text("Reason (required)") }, singleLine = true)
+                if (kind == "ADJUSTMENT" && amount > product.quantityOnHand) {
+                    Text("Quantity cannot exceed current stock.", color = Color(0xFFB94A48), fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = valid, onClick = { onSave(kind, amount, reason.trim()) }) { Text("Save movement") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -155,8 +238,10 @@ private fun AddProductDialog(
     var price by remember { mutableStateOf("") }
     var threshold by remember { mutableStateOf("5") }
     var opening by remember { mutableStateOf("0") }
-    val valid = name.isNotBlank() && (price.toDoubleOrNull() ?: 0.0) >= 0.0 &&
-        price.toDoubleOrNull() != null && (opening.toIntOrNull() ?: -1) >= 0
+    val parsedPrice = price.toDoubleOrNull()
+    val parsedOpening = opening.toIntOrNull()
+    val valid = name.isNotBlank() && parsedPrice != null && parsedPrice >= 0.0 &&
+        parsedOpening != null && parsedOpening >= 0 && (threshold.isBlank() || (threshold.toIntOrNull() ?: -1) >= 0)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -174,7 +259,7 @@ private fun AddProductDialog(
         confirmButton = {
             TextButton(enabled = valid, onClick = {
                 onSave(name.trim(), category.trim().ifBlank { "General" }, unit.trim().ifBlank { "units" },
-                    price.toDouble(), threshold.toIntOrNull(), opening.toInt())
+                    parsedPrice!!, threshold.toIntOrNull(), parsedOpening!!)
             }) { Text("Save product") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
