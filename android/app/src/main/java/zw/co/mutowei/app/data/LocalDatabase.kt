@@ -67,15 +67,16 @@ interface StockDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMovement(movement: StockMovementEntity)
 
-    @Query("UPDATE products SET quantityOnHand = quantityOnHand + :delta, updatedAt = :updatedAt WHERE id = :productId")
-    suspend fun changeQuantity(productId: String, delta: Int, updatedAt: Long)
+    @Query("UPDATE products SET quantityOnHand = quantityOnHand + :delta, updatedAt = :updatedAt WHERE id = :productId AND quantityOnHand + :delta >= 0")
+    suspend fun changeQuantity(productId: String, delta: Int, updatedAt: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun enqueue(operation: SyncQueueEntity)
 
     @Transaction
     suspend fun recordMovement(movement: StockMovementEntity, queueItem: SyncQueueEntity) {
-        changeQuantity(movement.productId, movement.quantityDelta, movement.createdAt)
+        val updated = changeQuantity(movement.productId, movement.quantityDelta, movement.createdAt)
+        check(updated == 1) { "Stock cannot go below zero or product no longer exists" }
         insertMovement(movement)
         enqueue(queueItem)
     }
