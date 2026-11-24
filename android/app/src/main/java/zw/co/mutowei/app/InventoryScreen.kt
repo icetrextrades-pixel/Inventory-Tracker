@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import zw.co.mutowei.app.data.DatabaseProvider
 import zw.co.mutowei.app.data.ProductEntity
+import zw.co.mutowei.app.data.ProductPackageEntity
 import zw.co.mutowei.app.data.Shop
 import zw.co.mutowei.app.data.StockMovementEntity
 import zw.co.mutowei.app.data.SyncQueueEntity
@@ -142,7 +143,13 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
     selectedProduct?.let { product ->
         StockActionDialog(
             product = product,
+            dao = dao,
             onDismiss = { selectedProduct = null },
+            onAddPackage = { packageName, units ->
+                scope.launch {
+                    dao.insertPackage(ProductPackageEntity(UUID.randomUUID().toString(), product.id, packageName, units, System.currentTimeMillis()))
+                }
+            },
             onSave = { kind, quantity, reason ->
                 scope.launch {
                     try {
@@ -192,20 +199,50 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
 @Composable
 private fun StockActionDialog(
     product: ProductEntity,
+    dao: zw.co.mutowei.app.data.StockDao,
     onDismiss: () -> Unit,
+    onAddPackage: (String, Int) -> Unit,
     onSave: (String, Int, String) -> Unit
 ) {
+    val packages by dao.observePackages(product.id).collectAsState(initial = emptyList())
     var kind by remember { mutableStateOf("RECEIVE") }
     var quantity by remember { mutableStateOf("1") }
     var reason by remember { mutableStateOf("") }
-    val amount = quantity.toIntOrNull() ?: 0
-    val valid = amount > 0 && (kind == "RECEIVE" || amount <= product.quantityOnHand) && reason.isNotBlank()
+    var selectedPackage by remember { mutableStateOf<ProductPackageEntity?>(null) }
+    var newPackageName by remember { mutableStateOf("") }
+    var newPackageUnits by remember { mutableStateOf("12") }
+    val entered = quantity.toIntOrNull() ?: 0
+    val amount = entered * (selectedPackage?.unitsPerPackage ?: 1)
+    val valid = entered > 0 && (kind == "RECEIVE" || amount <= product.quantityOnHand) && reason.isNotBlank()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Manage ${product.name}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Current on hand: ${product.quantityOnHand}", fontWeight = FontWeight.SemiBold)
+                Text("Current on hand: " + product.quantityOnHand + " " + product.baseUnit, fontWeight = FontWeight.SemiBold)
+                Text("Receive / remove as:", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(selected = selectedPackage == null, onClick = { selectedPackage = null })
+                    Text(product.baseUnit)
+                }
+                packages.forEach { pack ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedPackage?.id == pack.id, onClick = { selectedPackage = pack })
+                        Text(pack.packageName + " (" + pack.unitsPerPackage + " " + product.baseUnit + ")")
+                    }
+                }
+                OutlinedTextField(newPackageName, { newPackageName = it }, label = { Text("New package name") }, singleLine = true)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(newPackageUnits, { newPackageUnits = it.filter(Char::isDigit) }, label = { Text("Units per package") }, modifier = Modifier.weight(1f), singleLine = true)
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(
+                        enabled = newPackageName.isNotBlank() && (newPackageUnits.toIntOrNull() ?: 0) > 0,
+                        onClick = {
+                            onAddPackage(newPackageName.trim(), newPackageUnits.toInt())
+                            newPackageName = ""
+                        }
+                    ) { Text("Add pack") }
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     RadioButton(selected = kind == "RECEIVE", onClick = { kind = "RECEIVE" })
                     Text("Receive stock")
@@ -213,7 +250,8 @@ private fun StockActionDialog(
                     RadioButton(selected = kind == "ADJUSTMENT", onClick = { kind = "ADJUSTMENT" })
                     Text("Remove / adjust")
                 }
-                OutlinedTextField(quantity, { quantity = it.filter(Char::isDigit) }, label = { Text("Quantity") }, singleLine = true)
+                OutlinedTextField(quantity, { quantity = it.filter(Char::isDigit) }, label = { Text("Number of " + (selectedPackage?.packageName ?: product.baseUnit)) }, singleLine = true)
+                Text("This movement changes stock by " + amount + " " + product.baseUnit + ".", fontSize = 12.sp, color = StockMuted)
                 OutlinedTextField(reason, { reason = it }, label = { Text("Reason (required)") }, singleLine = true)
                 if (kind == "ADJUSTMENT" && amount > product.quantityOnHand) {
                     Text("Quantity cannot exceed current stock.", color = Color(0xFFB94A48), fontSize = 12.sp)
@@ -221,7 +259,7 @@ private fun StockActionDialog(
             }
         },
         confirmButton = {
-            TextButton(enabled = valid, onClick = { onSave(kind, amount, reason.trim()) }) { Text("Save movement") }
+            TextButton(enabled = valid, onClick = { onSave(kind, amount, reason.trim() + if (selectedPackage != null) " (" + entered + " × " + selectedPackage!!.packageName + ")" else "") }) { Text("Save movement") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
