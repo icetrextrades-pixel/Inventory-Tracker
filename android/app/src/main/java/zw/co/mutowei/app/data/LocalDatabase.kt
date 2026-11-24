@@ -29,6 +29,15 @@ data class ProductEntity(
     val archived: Boolean = false
 )
 
+@Entity(tableName = "product_packages", indices = [Index("productId")])
+data class ProductPackageEntity(
+    @PrimaryKey val id: String,
+    val productId: String,
+    val packageName: String,
+    val unitsPerPackage: Int,
+    val createdAt: Long
+)
+
 @Entity(tableName = "stock_movements", indices = [Index("shopId"), Index("productId"), Index("createdAt")])
 data class StockMovementEntity(
     @PrimaryKey val id: String,
