@@ -24,6 +24,7 @@ data class ProductEntity(
     val category: String,
     val sellingPriceMinor: Long,
     val lowStockThreshold: Int?,
+    val quantityOnHand: Int = 0,
     val updatedAt: Long,
     val archived: Boolean = false
 )
@@ -66,11 +67,15 @@ interface StockDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMovement(movement: StockMovementEntity)
 
+    @Query("UPDATE products SET quantityOnHand = quantityOnHand + :delta, updatedAt = :updatedAt WHERE id = :productId")
+    suspend fun changeQuantity(productId: String, delta: Int, updatedAt: Long)
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun enqueue(operation: SyncQueueEntity)
 
     @Transaction
     suspend fun recordMovement(movement: StockMovementEntity, queueItem: SyncQueueEntity) {
+        changeQuantity(movement.productId, movement.quantityDelta, movement.createdAt)
         insertMovement(movement)
         enqueue(queueItem)
     }
@@ -78,7 +83,7 @@ interface StockDao {
 
 @Database(
     entities = [ProductEntity::class, StockMovementEntity::class, SyncQueueEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class MutoweiDatabase : RoomDatabase() {
