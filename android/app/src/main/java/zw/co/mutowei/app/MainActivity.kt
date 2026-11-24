@@ -179,8 +179,7 @@ private fun HomeScreen(
             Surface(shape = RoundedCornerShape(22.dp), color = Navy, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("STOCK CONTROL", color = Gold, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                    Text("Know what you have.
-Know what moves.", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                    Text("Know what you have.\nKnow what moves.", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
                     Text("Track deliveries, adjustments and every stock movement.", color = Color(0xFFCFD5DF), fontSize = 12.sp)
                     Button(
                         onClick = { onNavigate(Destination.STOCK) },
