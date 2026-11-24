@@ -19,3 +19,7 @@ Minimum SDK: 26. Package: `zw.co.mutowei.app`.
 
 ## Current status
 This is the first source-code foundation and UI preview, not a signed APK. Product cards currently use clearly marked preview data; Room entities/DAO/database are scaffolded but not yet wired to screens. No live Supabase connection is configured.
+
+## Automated APK builds
+
+GitHub Actions builds a debug APK for this branch. Open the repository Actions tab and download the `mutowei-investments-debug-apk` artifact after a successful run. This is a development build and is not yet connected to live shop records.
