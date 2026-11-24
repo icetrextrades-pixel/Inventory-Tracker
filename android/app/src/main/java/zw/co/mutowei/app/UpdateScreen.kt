@@ -38,6 +38,20 @@ fun UpdateScreen(padding: PaddingValues) {
     var hasUpdate by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
+    LaunchedEffect(Unit) {
+        checking = true
+        try {
+            val latest = withContext(Dispatchers.IO) { fetchLatestRelease() }
+            release = latest
+            hasUpdate = compareVersions(latest.tag, installedVersionName(context)) > 0
+            message = if (hasUpdate) "A newer release is available: " + latest.tag else "You are using the latest published release."
+        } catch (e: Exception) {
+            message = "No published update is available yet. You can check again later."
+        } finally {
+            checking = false
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(22.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -115,6 +129,11 @@ private fun fetchLatestRelease(): ReleaseInfo {
     try {
         if (connection.responseCode != 200) throw IllegalStateException("No published release was found yet.")
         val json = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        val assets = json.optJSONArray("assets")
+        val hasApk = assets != null && (0 until assets.length()).any {
+            assets.getJSONObject(it).optString("name").endsWith(".apk", ignoreCase = true)
+        }
+        if (!hasApk) throw IllegalStateException("The latest release does not contain an installable APK.")
         return ReleaseInfo(
             tag = json.optString("tag_name"),
             title = json.optString("name").ifBlank { json.optString("tag_name") },
