@@ -23,3 +23,5 @@ This is the first source-code foundation and UI preview, not a signed APK. Produ
 ## Automated APK builds
 
 GitHub Actions builds a debug APK for this branch. Open the repository Actions tab and download the `mutowei-investments-debug-apk` artifact after a successful run. This is a development build and is not yet connected to live shop records.
+
+Build pipeline updated to use the runner-provided Android SDK.
