@@ -61,8 +61,7 @@ fun UpdateScreen(padding: PaddingValues) {
                             try {
                                 val latest = withContext(Dispatchers.IO) { fetchLatestRelease() }
                                 release = latest
-                                val latestCode = latest.tag.removePrefix("v").substringBefore(".").toIntOrNull()
-                                hasUpdate = latestCode != null && latestCode > installedVersionCode(context)
+                                hasUpdate = compareVersions(latest.tag, installedVersionName(context)) > 0
                                 message = if (hasUpdate) "A newer release is available: " + latest.tag else "You are using the latest published release, or its version tag is not newer."
                             } catch (e: Exception) {
                                 error = e.message ?: "Could not check for updates."
@@ -125,4 +124,16 @@ private fun fetchLatestRelease(): ReleaseInfo {
     } finally {
         connection.disconnect()
     }
+}
+
+private fun compareVersions(remote: String, installed: String): Int {
+    fun parts(value: String) = value.removePrefix("v").split(".").map { it.takeWhile(Char::isDigit).toIntOrNull() ?: 0 }
+    val left = parts(remote)
+    val right = parts(installed)
+    for (index in 0 until maxOf(left.size, right.size)) {
+        val a = left.getOrElse(index) { 0 }
+        val b = right.getOrElse(index) { 0 }
+        if (a != b) return a.compareTo(b)
+    }
+    return 0
 }
