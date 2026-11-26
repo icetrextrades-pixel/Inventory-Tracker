@@ -25,6 +25,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.time.LocalDate
+import java.time.ZoneId
+import zw.co.mutowei.app.data.BizzyAuditCatalogue
 
 private val SalesInk = Color(0xFF172235)
 private val SalesMuted = Color(0xFF7A8492)
@@ -39,6 +42,11 @@ fun SalesScreen(shop: Shop, padding: PaddingValues) {
     val products by dao.observeProducts(shop.id).collectAsState(initial = emptyList())
     val sales by dao.observeSales(shop.id).collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
+    LaunchedEffect(shop) { if (shop == Shop.BIZZY) BizzyAuditCatalogue.seed(dao) }
+    val todayStart = remember { LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() }
+    val todaySales = sales.filter { it.createdAt >= todayStart }
+    val cashToday = todaySales.filter { it.paymentMethod == "CASH" }.sumOf { it.totalMinor }
+    val ecoCashToday = todaySales.filter { it.paymentMethod == "ECOCASH" }.sumOf { it.totalMinor }
     var search by remember(shop.id) { mutableStateOf("") }
     var cart by remember(shop.id) { mutableStateOf<Map<String, Int>>(emptyMap()) }
     var payment by remember { mutableStateOf("CASH") }
@@ -57,6 +65,23 @@ fun SalesScreen(shop: Shop, padding: PaddingValues) {
         item {
             OutlinedTextField(search, { search = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                 placeholder = { Text("Find a product") }, leadingIcon = { Icon(Icons.Default.Search, null) }, shape = RoundedCornerShape(13.dp))
+        }
+        item {
+            Surface(color = Color.White, shape = RoundedCornerShape(15.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    Text("TODAY'S TAKINGS", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = SalesMuted, letterSpacing = 1.1.sp)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Cash", color = SalesMuted, fontSize = 12.sp); Text(money(cashToday), fontWeight = FontWeight.SemiBold, color = SalesInk)
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("EcoCash", color = SalesMuted, fontSize = 12.sp); Text(money(ecoCashToday), fontWeight = FontWeight.SemiBold, color = SalesInk)
+                    }
+                    HorizontalDivider()
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Total received", fontWeight = FontWeight.Bold, color = SalesInk); Text(money(cashToday + ecoCashToday), fontWeight = FontWeight.Bold, color = SalesNavy)
+                    }
+                }
+            }
         }
         item { Text("PRODUCTS", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = SalesMuted, letterSpacing = 1.2.sp) }
         if (filtered.isEmpty()) item { Text("No products found. Add products in Stock first.", color = SalesMuted) }
