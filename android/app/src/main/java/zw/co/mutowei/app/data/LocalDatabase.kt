@@ -79,6 +79,22 @@ interface StockDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertProduct(product: ProductEntity)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertProductIfMissing(product: ProductEntity): Long
+
+    @Transaction
+    suspend fun seedAuditProduct(
+        product: ProductEntity,
+        movement: StockMovementEntity?,
+        queueItem: SyncQueueEntity?
+    ) {
+        val insertedRowId = insertProductIfMissing(product)
+        if (insertedRowId != -1L && movement != null && queueItem != null) {
+            insertMovement(movement)
+            enqueue(queueItem)
+        }
+    }
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMovement(movement: StockMovementEntity)
 
