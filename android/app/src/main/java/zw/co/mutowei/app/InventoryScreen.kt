@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import zw.co.mutowei.app.data.BizzyAuditCatalogue
 import zw.co.mutowei.app.data.DatabaseProvider
 import zw.co.mutowei.app.data.ProductEntity
 import zw.co.mutowei.app.data.ProductPackageEntity
@@ -38,6 +39,7 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
     val products by dao.observeProducts(shop.id).collectAsState(initial = emptyList())
     val movements by dao.observeMovements(shop.id).collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
+    LaunchedEffect(shop) { if (shop == Shop.BIZZY) BizzyAuditCatalogue.seed(dao) }
     var search by remember { mutableStateOf("") }
     var showAdd by remember { mutableStateOf(false) }
     var showHistory by remember { mutableStateOf(false) }
@@ -98,7 +100,8 @@ fun InventoryScreen(shop: Shop, padding: PaddingValues) {
                         Icon(Icons.Default.Inventory2, null, tint = StockGold, modifier = Modifier.size(28.dp))
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text(product.name, fontWeight = FontWeight.SemiBold, color = StockInk)
-                            Text("${product.category} · ${product.sellingPriceMinor / 100}.${(product.sellingPriceMinor % 100).toString().padStart(2, '0')} / ${product.baseUnit}", fontSize = 11.sp, color = StockMuted)
+                            val priceLabel = if (product.sellingPriceMinor == 0L) "Price not set" else "$" + product.sellingPriceMinor / 100 + "." + (product.sellingPriceMinor % 100).toString().padStart(2, '0')
+                            Text("${product.category} · $priceLabel / ${product.baseUnit}", fontSize = 11.sp, color = StockMuted)
                             Text("On hand: ${product.quantityOnHand}", fontWeight = FontWeight.Bold, color = if (product.lowStockThreshold != null && product.quantityOnHand <= product.lowStockThreshold) Color(0xFFB94A48) else StockInk)
                         }
                         OutlinedButton(onClick = { selectedProduct = product }) { Text("Manage") }
