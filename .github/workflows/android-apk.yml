@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - android-stock-foundation
+      - feature/android-sales-v0.4.0
     paths:
       - "android/**"
       - ".github/workflows/android-apk.yml"
