@@ -70,6 +70,12 @@ interface StockDao {
     @Query("SELECT * FROM stock_movements WHERE shopId = :shopId ORDER BY createdAt DESC")
     fun observeMovements(shopId: String): Flow<List<StockMovementEntity>>
 
+    @Query("SELECT * FROM product_packages WHERE productId = :productId ORDER BY packageName COLLATE NOCASE")
+    fun observePackages(productId: String): Flow<List<ProductPackageEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertPackage(productPackage: ProductPackageEntity)
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertProduct(product: ProductEntity)
 
@@ -92,8 +98,8 @@ interface StockDao {
 }
 
 @Database(
-    entities = [ProductEntity::class, StockMovementEntity::class, SyncQueueEntity::class],
-    version = 2,
+    entities = [ProductEntity::class, ProductPackageEntity::class, StockMovementEntity::class, SyncQueueEntity::class],
+    version = 3,
     exportSchema = false
 )
 abstract class MutoweiDatabase : RoomDatabase() {
